@@ -1,0 +1,44 @@
+package com.lifetrack
+
+import androidx.room.Room
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.LocalDate
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class AutoProgressTest {
+    @Test
+    fun waterCompletesHabitButManualOverrideWins() = runBlocking {
+        val db =
+            Room.inMemoryDatabaseBuilder(
+                    InstrumentationRegistry.getInstrumentation().targetContext,
+                    LifeDatabase::class.java,
+                )
+                .build()
+        try {
+            val today = LocalDate.now().toEpochDay()
+            val id = db.dao().habit(HabitEntity(name = "Вода", target = 500, createdDay = today))
+            db.productDao()
+                .put(
+                    HabitRule(id, type = "QUANTITY", unit = "мл", metric = "HYDRATION", auto = true)
+                )
+            LocalFoodRepository(db).water(WaterLog(amountMl = 500))
+            val updater = AutoProgressUpdater(db)
+            updater.update()
+            assertEquals(500, db.dao().completions().first().single().count)
+            db.dao().uncheck(id, today)
+            db.productDao().put(ProductPreference("habit_manual:$id:$today", "true"))
+            updater.update()
+            assertTrue(db.dao().completions().first().isEmpty())
+        } finally {
+            db.close()
+        }
+    }
+}

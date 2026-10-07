@@ -1,0 +1,39 @@
+package com.lifetrack.domain
+
+/**
+ * Optional OCR adapter must be enabled only after language/device validation. Every candidate is
+ * editable; this service never creates a financial transaction.
+ */
+data class ReceiptCandidate(
+    val merchant: String?,
+    val amountMinor: Long?,
+    val currency: String?,
+    val dateTimeMillis: Long?,
+    val lines: List<String>,
+    val confidence: String,
+)
+
+interface ReceiptScanService {
+    suspend fun scan(image: RecognitionImage): ReceiptCandidate
+}
+
+object ReceiptTextMapper {
+    fun parse(text: String): ReceiptCandidate {
+        val lines =
+            text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(200).toList()
+        val total = lines.lastOrNull { Regex("(?i)(итого|total|сумма)").containsMatchIn(it) }
+        val amount =
+            total?.let {
+                Regex("(\\d[\\d ]*[.,]\\d{2})")
+                    .findAll(it)
+                    .lastOrNull()
+                    ?.value
+                    ?.replace(" ", "")
+                    ?.replace(',', '.')
+                    ?.toBigDecimalOrNull()
+                    ?.movePointRight(2)
+                    ?.longValueExact()
+            }
+        return ReceiptCandidate(lines.firstOrNull(), amount, null, null, lines, "LOW")
+    }
+}

@@ -1,0 +1,451 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+
+@Composable
+fun Editor(
+    value: Any,
+    s: Snapshot,
+    currency: String,
+    onDismiss: () -> Unit,
+    onSave: (Any) -> Unit,
+) {
+    val kind =
+        when (value) {
+            is TransactionEntity -> value.type
+            is HabitEntity -> "HABIT"
+            is GoalEntity -> "GOAL"
+            is BudgetEntity -> "BUDGET"
+            is AccountEntity -> "ACCOUNT"
+            is CategoryEntity -> "CATEGORY"
+            else -> value.toString()
+        }
+    val transaction = value as? TransactionEntity
+    val habit = value as? HabitEntity
+    val goal = value as? GoalEntity
+    val budget = value as? BudgetEntity
+    val account = value as? AccountEntity
+    val category = value as? CategoryEntity
+    var name by remember {
+        mutableStateOf(habit?.name ?: goal?.name ?: account?.name ?: category?.name ?: "")
+    }
+    var description by remember {
+        mutableStateOf(transaction?.description ?: habit?.description ?: "")
+    }
+    var amount by remember {
+        mutableStateOf(
+            transaction?.amount?.let { MoneyFormatter.input(it) }
+                ?: budget?.amount?.takeIf { it > 0 }?.let { MoneyFormatter.input(it) }
+                ?: goal?.target?.let {
+                    if (goal.type == "FINANCIAL") MoneyFormatter.input(it) else it.toString()
+                }
+                ?: account?.opening?.let { MoneyFormatter.input(it) }
+                ?: ""
+        )
+    }
+    var current by remember {
+        mutableStateOf(
+            goal?.current?.let {
+                if (goal.type == "FINANCIAL") MoneyFormatter.input(it) else it.toString()
+            } ?: "0"
+        )
+    }
+    var type by remember {
+        mutableStateOf(
+            goal?.type
+                ?: category?.type
+                ?: transaction?.type
+                ?: if (kind == "GOAL") "FINANCIAL" else "EXPENSE"
+        )
+    }
+    var selectedCurrency by remember {
+        mutableStateOf(account?.currency ?: goal?.currency ?: budget?.currency ?: currency)
+    }
+    var accountId by remember {
+        mutableStateOf(
+            transaction?.accountId
+                ?: s.accounts.firstOrNull { it.currency == currency }?.id
+                ?: s.accounts.firstOrNull()?.id
+                ?: 0L
+        )
+    }
+    var toAccountId by remember {
+        mutableStateOf(
+            transaction?.toAccountId
+                ?: s.accounts
+                    .firstOrNull {
+                        it.id != accountId &&
+                            it.currency ==
+                                s.accounts.firstOrNull { a -> a.id == accountId }?.currency
+                    }
+                    ?.id
+                ?: 0L
+        )
+    }
+    var categoryId by remember {
+        mutableStateOf(
+            transaction?.categoryId
+                ?: budget?.categoryId
+                ?: if (kind == "BUDGET") 0L
+                else s.categories.firstOrNull { it.type == type }?.id ?: 0L
+        )
+    }
+    var date by remember {
+        mutableStateOf(
+            transaction?.time?.let {
+                Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime().toString()
+            }
+                ?: if (kind == "BUDGET") budget?.month ?: YearMonth.now().toString()
+                else
+                    goal?.deadline?.let { LocalDate.ofEpochDay(it).toString() }
+                        ?: if (kind in listOf("EXPENSE", "INCOME", "TRANSFER", "REFUND"))
+                            LocalDateTime.now().withSecond(0).withNano(0).toString()
+                        else ""
+        )
+    }
+    var frequency by remember { mutableStateOf(habit?.frequency ?: "DAILY") }
+    var days by remember { mutableStateOf(habit?.days ?: "1,2,3,4,5,6,7") }
+    var weekly by remember { mutableStateOf((habit?.weeklyTarget ?: 3).toString()) }
+    var target by remember { mutableStateOf((habit?.target ?: 1).toString()) }
+    var reminder by remember { mutableStateOf(habit?.reminder ?: "") }
+    var icon by remember { mutableStateOf(habit?.icon ?: "CHECK") }
+    var color by remember { mutableStateOf(habit?.color ?: "GREEN") }
+    var accountKind by remember { mutableStateOf(account?.kind ?: "CARD") }
+    LaunchedEffect(account?.id) {
+        if (account?.kind in listOf("CREDIT", "DEBT"))
+            amount = MoneyFormatter.input(kotlin.math.abs(account!!.opening))
+    }
+    var error by remember { mutableStateOf("") }
+    fun decimalAllowZero(v: String): Long =
+        v.trim()
+            .replace(",", ".")
+            .toBigDecimal()
+            .setScale(2, java.math.RoundingMode.UNNECESSARY)
+            .movePointRight(2)
+            .longValueExact()
+            .also { require(it >= 0) { "Значение не может быть отрицательным" } }
+    LifeBottomSheet(onDismiss) {
+        Text(
+            if (value !is String) "Редактирование"
+            else
+                when (kind) {
+                    "HABIT" -> "Новая привычка"
+                    "GOAL" -> "Новая цель"
+                    "BUDGET" -> "Новый бюджет"
+                    "ACCOUNT" -> "Новый счёт"
+                    "CATEGORY" -> "Новая категория"
+                    else -> "Новая операция"
+                },
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        if (kind in listOf("HABIT", "GOAL", "ACCOUNT", "CATEGORY"))
+            Field("Название", name, { name = it })
+        when (kind) {
+            "EXPENSE",
+            "INCOME",
+            "TRANSFER",
+            "REFUND" -> {
+                LifeSegmentedControl(listOf("EXPENSE", "INCOME", "TRANSFER", "REFUND"), type) {
+                    type = it
+                    categoryId =
+                        s.categories
+                            .firstOrNull { c -> c.type == if (it == "REFUND") "EXPENSE" else it }
+                            ?.id ?: 0L
+                }
+                LifeInput("Сумма · $selectedCurrency", amount, { amount = it }, true, hero = true)
+                Choice(
+                    "Счёт",
+                    s.accounts
+                        .firstOrNull { it.id == accountId }
+                        ?.let { "${it.id}: ${it.name} · ${it.currency}" } ?: "Выберите",
+                    s.accounts.map { "${it.id}: ${it.name} · ${it.currency}" },
+                ) {
+                    accountId = it.substringBefore(":").toLong()
+                }
+                if (type == "TRANSFER")
+                    Choice(
+                        "На счёт",
+                        s.accounts
+                            .firstOrNull { it.id == toAccountId }
+                            ?.let { "${it.id}: ${it.name}" } ?: "Выберите",
+                        s.accounts
+                            .filter {
+                                it.id != accountId &&
+                                    it.currency ==
+                                        s.accounts.firstOrNull { a -> a.id == accountId }?.currency
+                            }
+                            .map { "${it.id}: ${it.name}" },
+                    ) {
+                        toAccountId = it.substringBefore(":").toLong()
+                    }
+                else
+                    Choice(
+                        "Категория",
+                        s.categories
+                            .firstOrNull { it.id == categoryId }
+                            ?.let { "${it.id}: ${it.name}" } ?: "Выберите",
+                        s.categories
+                            .filter { it.type == if (type == "REFUND") "EXPENSE" else type }
+                            .map { "${it.id}: ${it.name}" },
+                    ) {
+                        categoryId = it.substringBefore(":").toLong()
+                    }
+                LifeDateTimeField(date) { date = it }
+                Field("Описание", description, { description = it })
+                transaction?.let { tx ->
+                    val source =
+                        s.banking.sources.firstOrNull { it.transactionId == tx.id }?.source
+                            ?: "MANUAL"
+                    Text(
+                        "Источник: " +
+                            when (source) {
+                                "NOTIFICATION" -> "уведомление банка"
+                                "STATEMENT_IMPORT" -> "банковская выписка"
+                                "BANK_API" -> "банк"
+                                else -> "вручную"
+                            },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            "HABIT" -> {
+                Field("Описание", description, { description = it })
+                Choice("Частота", frequency, listOf("DAILY", "DAYS", "WEEKLY")) { frequency = it }
+                if (frequency == "DAYS") LifeWeekdays(days) { days = it }
+                if (frequency == "WEEKLY")
+                    Field("Выполнений в неделю · 1–7", weekly, { weekly = it }, true)
+                Field("Целевое количество за день", target, { target = it }, true)
+                LifeTimeField("Напоминание", reminder) { reminder = it }
+                Choice("Иконка", icon, listOf("CHECK", "SPORT", "BOOK", "WATER", "LANGUAGE")) {
+                    icon = it
+                }
+                Choice("Цвет", color, listOf("GREEN", "BLUE", "SAND")) { color = it }
+            }
+            "GOAL" -> {
+                Choice("Тип цели", type, listOf("FINANCIAL", "LIFE")) {
+                    type = it
+                    amount = ""
+                    current = "0"
+                }
+                if (type == "FINANCIAL")
+                    Choice("Валюта", selectedCurrency, listOf("RUB", "USD", "EUR", "SEK")) {
+                        selectedCurrency = it
+                    }
+                Field(
+                    if (type == "FINANCIAL") "Целевая сумма" else "Целевое число дней",
+                    amount,
+                    { amount = it },
+                    true,
+                )
+                Field("Текущий прогресс", current, { current = it }, true)
+                LifeDateField("Срок", date) { date = it }
+            }
+            "BUDGET" -> {
+                LifeMonthField(date) { date = it }
+                Choice("Валюта", selectedCurrency, listOf("RUB", "USD", "EUR", "SEK")) {
+                    selectedCurrency = it
+                }
+                Choice(
+                    "Категория",
+                    if (categoryId == 0L) "0: Общий бюджет"
+                    else
+                        s.categories
+                            .firstOrNull { it.id == categoryId }
+                            ?.let { "${it.id}: ${it.name}" } ?: "0: Общий бюджет",
+                    listOf("0: Общий бюджет") +
+                        s.categories.filter { it.type == "EXPENSE" }.map { "${it.id}: ${it.name}" },
+                ) {
+                    categoryId = it.substringBefore(":").toLong()
+                }
+                Field("Лимит", amount, { amount = it }, true)
+            }
+            "ACCOUNT" -> {
+                Choice("Валюта", selectedCurrency, listOf("RUB", "USD", "EUR", "SEK")) {
+                    selectedCurrency = it
+                }
+                Choice("Тип", accountKind, listOf("CARD", "CASH", "SAVINGS", "CREDIT", "DEBT")) {
+                    accountKind = it
+                }
+                Field(
+                    if (accountKind in listOf("CREDIT", "DEBT")) "Начальный долг"
+                    else "Начальный баланс",
+                    amount,
+                    { amount = it },
+                    true,
+                )
+                if (accountKind in listOf("CREDIT", "DEBT"))
+                    Text(
+                        "Долг учитывается отрицательным балансом. Погашение — перевод с другого счёта в той же валюте.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                if (
+                    account != null &&
+                        s.transactions.any {
+                            it.accountId == account.id || it.toAccountId == account.id
+                        }
+                )
+                    Text(
+                        "Валюта счёта с операциями не может быть изменена.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+            }
+            "CATEGORY" -> Choice("Тип", type, listOf("EXPENSE", "INCOME")) { type = it }
+        }
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        Column(Modifier.fillMaxWidth()) {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+            PrimaryButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    try {
+                        if (kind in listOf("HABIT", "GOAL", "ACCOUNT", "CATEGORY"))
+                            require(name.isNotBlank()) { "Введите название" }
+                        val result: Any =
+                            when (kind) {
+                                "EXPENSE",
+                                "INCOME",
+                                "TRANSFER",
+                                "REFUND" -> {
+                                    val time =
+                                        LocalDateTime.parse(date)
+                                            .atZone(ZoneId.systemDefault())
+                                            .toInstant()
+                                            .toEpochMilli()
+                                    require(time <= System.currentTimeMillis()) {
+                                        "Дата операции не может быть в будущем"
+                                    }
+                                    TransactionEntity(
+                                        id = transaction?.id ?: 0,
+                                        amount = MoneyFormatter.parse(amount),
+                                        type = type,
+                                        categoryId = if (type == "TRANSFER") null else categoryId,
+                                        accountId = accountId,
+                                        toAccountId = if (type == "TRANSFER") toAccountId else null,
+                                        time = time,
+                                        description = description,
+                                        createdAt =
+                                            transaction?.createdAt ?: System.currentTimeMillis(),
+                                        demo = transaction?.demo ?: false,
+                                    )
+                                }
+                                "HABIT" -> {
+                                    if (reminder.isNotBlank()) LocalTime.parse(reminder)
+                                    val count = target.toInt()
+                                    require(count in 1..10000)
+                                    val w = weekly.toInt()
+                                    require(w in 1..7)
+                                    if (frequency == "DAYS")
+                                        require(days.split(",").all { it.toIntOrNull() in 1..7 })
+                                    HabitEntity(
+                                        id = habit?.id ?: 0,
+                                        name = name.trim(),
+                                        description = description,
+                                        icon = icon,
+                                        frequency = frequency,
+                                        days = days,
+                                        weeklyTarget = w,
+                                        target = count,
+                                        reminder = reminder,
+                                        createdDay =
+                                            habit?.createdDay ?: LocalDate.now().toEpochDay(),
+                                        color = color,
+                                        archived = habit?.archived ?: false,
+                                        demo = habit?.demo ?: false,
+                                    )
+                                }
+                                "GOAL" -> {
+                                    val t =
+                                        if (type == "FINANCIAL") MoneyFormatter.parse(amount)
+                                        else amount.toLong().also { require(it > 0) }
+                                    val c =
+                                        if (type == "FINANCIAL") decimalAllowZero(current)
+                                        else current.toLong().also { require(it >= 0) }
+                                    GoalEntity(
+                                        id = goal?.id ?: 0,
+                                        name = name.trim(),
+                                        type = type,
+                                        target = t,
+                                        current = c,
+                                        currency = selectedCurrency,
+                                        deadline =
+                                            if (date.isBlank()) null
+                                            else LocalDate.parse(date).toEpochDay(),
+                                        demo = goal?.demo ?: false,
+                                    )
+                                }
+                                "BUDGET" -> {
+                                    YearMonth.parse(date)
+                                    BudgetEntity(
+                                        id = budget?.id ?: 0,
+                                        month = date,
+                                        categoryId = categoryId.takeIf { it != 0L },
+                                        amount = MoneyFormatter.parse(amount),
+                                        currency = selectedCurrency,
+                                        demo = budget?.demo ?: false,
+                                    )
+                                }
+                                "ACCOUNT" -> {
+                                    require(
+                                        account == null ||
+                                            account.currency == selectedCurrency ||
+                                            s.transactions.none {
+                                                it.accountId == account.id ||
+                                                    it.toAccountId == account.id
+                                            }
+                                    ) {
+                                        "Нельзя изменить валюту счёта с операциями"
+                                    }
+                                    AccountEntity(
+                                        id = account?.id ?: 0,
+                                        name = name.trim(),
+                                        opening =
+                                            decimalAllowZero(amount.ifBlank { "0" }).let {
+                                                if (accountKind in listOf("CREDIT", "DEBT"))
+                                                    -kotlin.math.abs(it)
+                                                else it
+                                            },
+                                        currency = selectedCurrency,
+                                        kind = accountKind,
+                                    )
+                                }
+                                else -> {
+                                    require(
+                                        category == null ||
+                                            category.type == type ||
+                                            s.transactions.none { it.categoryId == category.id }
+                                    ) {
+                                        "Нельзя изменить тип используемой категории"
+                                    }
+                                    CategoryEntity(
+                                        id = category?.id ?: 0,
+                                        name = name.trim(),
+                                        type = type,
+                                    )
+                                }
+                            }
+                        onSave(result)
+                    } catch (e: Exception) {
+                        error = e.message ?: "Проверьте значения"
+                    }
+                },
+            ) {
+                Text("Сохранить")
+            }
+        }
+    }
+}
+
+@Composable
+private fun Field(
+    label: String,
+    value: String,
+    change: (String) -> Unit,
+    numeric: Boolean = false,
+) = LifeInput(label, value, change, numeric)

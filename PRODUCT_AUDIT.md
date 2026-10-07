@@ -1,0 +1,1 @@
+<resources><string name="app_name">LifeTrack</string><string name="widget_description">Питание, привычки и шаги на сегодня</string><string name="widget_food">+ Еда</string><string name="widget_water">+ Вода</string></resources>

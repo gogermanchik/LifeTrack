@@ -1,0 +1,592 @@
+package com.lifetrack.ui
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.*
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.*
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.*
+import com.google.mlkit.vision.barcode.*
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.math.BigDecimal
+import java.time.*
+import java.util.concurrent.Executors
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+fun milli(text: String): Long? =
+    runCatching { BigDecimal(text.replace(',', '.')).multiply(BigDecimal(1000)).longValueExact() }
+        .getOrNull()
+
+@Composable
+fun ProductField(label: String, value: String, change: (String) -> Unit, numeric: Boolean = false) =
+    LifeInput(label, value, change, numeric)
+
+@Composable
+fun CatalogScreen(
+    vm: ProductViewModel,
+    date: LocalDate,
+    onBarcode: () -> Unit,
+    onLabel: () -> Unit = {},
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var tab by rememberSaveable { mutableStateOf("Поиск") }
+    var selected by remember { mutableStateOf<CatalogFood?>(null) }
+    val results by vm.results.collectAsStateWithLifecycle()
+    val loading by vm.searching.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    val p by vm.data.collectAsStateWithLifecycle()
+    LaunchedEffect(query, tab) { vm.search(query, tab == "Поиск") }
+    val visible =
+        when (tab) {
+            "Избранное" -> (p.catalog + results).filter { it.favorite }.distinctBy { it.key }
+            "Мои продукты" -> p.catalog.filter { it.override }
+            else -> results
+        }
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        LifeTopBar("Продукты")
+        ProductField("Название или бренд", query, { query = it })
+        LifeSegmentedControl(listOf("Поиск", "Избранное", "Мои продукты"), tab) { tab = it }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onBarcode) { Text("Сканировать код") }
+            TextButton({
+                selected =
+                    CatalogFood("custom:${java.util.UUID.randomUUID()}", name = "", override = true)
+            }) {
+                Text("Свой продукт")
+            }
+        }
+        TextButton(onLabel) { Text("Прочитать этикетку") }
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (error != null)
+            Text(
+                error!!,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        LazyColumn(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
+        ) {
+            if (visible.isEmpty())
+                item {
+                    LifeEmptyState(
+                        if (query.isBlank()) "Ваше питание, без лишних шагов"
+                        else "Не нашли продукт",
+                        "Ищите по названию или бренду, сканируйте упаковку или создайте свой продукт.",
+                    )
+                }
+            items(visible, key = { it.key }) { v ->
+                Surface(
+                    onClick = { selected = v },
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surface,
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ProductImage(v.imageUrl)
+                        Column(Modifier.weight(1f)) {
+                            Text(v.name, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                listOf(v.brand, v.quantity)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                "${v.calories?.let{it/1000} ?:"—"} ккал / 100 ${v.baseUnit}",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+            }
+            item {
+                Text(
+                    "Open Food Facts · открытые данные ODbL, изображения CC BY-SA. Значения на упаковке могут отличаться: проверьте продукт перед сохранением.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    selected?.let { v -> CatalogPortionSheet(vm, v, date, { selected = null }) }
+}
+
+@Composable
+fun ProductImage(url: String) {
+    var bitmap by remember(url) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(url) {
+        if (url.startsWith("https://"))
+            withContext(Dispatchers.IO) {
+                runCatching {
+                        val c =
+                            java.net.URL(url).openConnection().apply {
+                                connectTimeout = 5000
+                                readTimeout = 5000
+                            }
+                        c.getInputStream().use {
+                            val output = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(8192)
+                            var count = it.read(buffer)
+                            while (count != -1) {
+                                require(output.size() + count <= 300_000)
+                                output.write(buffer, 0, count)
+                                count = it.read(buffer)
+                            }
+                            val bytes = output.toByteArray()
+                            if (bytes.size <= 300_000)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            else null
+                        }
+                    }
+                    .getOrNull()
+                    ?.let { bitmap = it }
+            }
+    }
+    bitmap?.let {
+        Image(
+            it.asImageBitmap(),
+            "Фото продукта",
+            Modifier.size(48.dp),
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+        )
+    }
+}
+
+@Composable
+fun CatalogPortionSheet(
+    vm: ProductViewModel,
+    initial: CatalogFood,
+    date: LocalDate,
+    dismiss: () -> Unit,
+    onIngredient: ((FoodLog) -> Unit)? = null,
+) {
+    var name by remember { mutableStateOf(initial.name) }
+    var brand by remember { mutableStateOf(initial.brand) }
+    var base by remember { mutableStateOf(initial.baseUnit) }
+    var amount by remember { mutableStateOf("100") }
+    var unit by remember { mutableStateOf(initial.baseUnit) }
+    var meal by remember { mutableStateOf("LUNCH") }
+    var editing by remember {
+        mutableStateOf(
+            initial.name.isBlank() ||
+                listOf(initial.calories, initial.protein, initial.fat, initial.carbs).any {
+                    it == null
+                }
+        )
+    }
+    var calories by remember {
+        mutableStateOf(initial.calories?.let { (it / 1000.0).toString() }.orEmpty())
+    }
+    var protein by remember {
+        mutableStateOf(initial.protein?.let { (it / 1000.0).toString() }.orEmpty())
+    }
+    var fat by remember { mutableStateOf(initial.fat?.let { (it / 1000.0).toString() }.orEmpty()) }
+    var carbs by remember {
+        mutableStateOf(initial.carbs?.let { (it / 1000.0).toString() }.orEmpty())
+    }
+    var serving by remember {
+        mutableStateOf(initial.servingAmount?.let { (it / 1000.0).toString() }.orEmpty())
+    }
+    var saving by remember { mutableStateOf(false) }
+    var warning by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val food =
+        initial.copy(
+            name = name,
+            brand = brand,
+            baseUnit = base,
+            calories = milli(calories),
+            protein = milli(protein),
+            fat = milli(fat),
+            carbs = milli(carbs),
+            servingAmount = milli(serving),
+        )
+    val preview =
+        runCatching {
+                Portions.log(food, milli(amount) ?: 0, unit, meal, System.currentTimeMillis())
+            }
+            .getOrNull()
+    LifeBottomSheet(dismiss) {
+        Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(name.ifBlank { "Свой продукт" }, style = MaterialTheme.typography.headlineSmall)
+            if (initial.barcode != null)
+                Text("Код ${initial.barcode}", style = MaterialTheme.typography.bodySmall)
+            if (editing) {
+                ProductField("Название", name, { name = it })
+                ProductField("Бренд", brand, { brand = it })
+                Choice("Основа значений", base, listOf("г", "мл")) {
+                    base = it
+                    unit = it
+                }
+                Text("На 100 $base", style = MaterialTheme.typography.labelLarge)
+                ProductField("Калории, ккал", calories, { calories = it }, true)
+                ProductField("Белки, г", protein, { protein = it }, true)
+                ProductField("Жиры, г", fat, { fat = it }, true)
+                ProductField("Углеводы, г", carbs, { carbs = it }, true)
+                ProductField("Одна порция / штука, $base", serving, { serving = it }, true)
+            } else {
+                Text(
+                    "${initial.brand} · ${initial.quantity}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton({ editing = true }) { Text("Исправить данные продукта") }
+            }
+            ProductField("Количество", amount, { amount = it }, true)
+            Choice("Единица", unit, listOf(base, "порция", "шт")) { unit = it }
+            Choice("Приём пищи", meal, listOf("BREAKFAST", "LUNCH", "DINNER", "SNACK")) {
+                meal = it
+            }
+            if (preview != null)
+                Text(
+                    "${preview.calories/1000} ккал · Б ${preview.protein/1000.0} · Ж ${preview.fat/1000.0} · У ${preview.carbs/1000.0}",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            else
+                Text(
+                    "Заполните количество и все БЖУ. Для порций нужна их масса или объём.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            if (warning != null) Text(warning!!, color = MaterialTheme.colorScheme.error)
+            PrimaryButton(
+                {
+                    if (!saving && preview != null) {
+                        saving = true
+                        scope.launch {
+                            try {
+                                if (editing) vm.catalog.saveOverride(food)
+                                if (onIngredient != null) onIngredient(preview)
+                                else {
+                                    vm.food.save(
+                                        preview.copy(
+                                            dateTime =
+                                                date
+                                                    .atTime(LocalTime.now())
+                                                    .atZone(ZoneId.systemDefault())
+                                                    .toInstant()
+                                                    .toEpochMilli()
+                                        )
+                                    )
+                                    vm.messages.emit("Добавлено в дневник")
+                                }
+                                dismiss()
+                            } catch (e: Exception) {
+                                warning = e.message ?: "Не удалось сохранить"
+                            } finally {
+                                saving = false
+                            }
+                        }
+                    }
+                },
+                Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (saving) "Сохраняем…"
+                    else if (onIngredient != null) "Добавить ингредиент" else "Добавить в дневник"
+                )
+            }
+            TextButton({
+                vm.run {
+                    vm.catalog.saveOverride(food.copy(favorite = !initial.favorite))
+                    dismiss()
+                }
+            }) {
+                Text(if (initial.favorite) "Убрать из избранного" else "В избранное")
+            }
+        }
+    }
+}
+
+@Composable
+fun BarcodeScreen(vm: ProductViewModel, date: LocalDate) {
+    val context = LocalContext.current
+    var granted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permission =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            granted = it
+        }
+    var code by rememberSaveable { mutableStateOf("") }
+    var product by remember { mutableStateOf<CatalogFood?>(null) }
+    var scanned by remember { mutableStateOf(false) }
+    var notFound by remember { mutableStateOf(false) }
+    var torch by remember { mutableStateOf(false) }
+    val loading by vm.searching.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    val haptic = LocalHapticFeedback.current
+    fun lookup(value: String) {
+        code = value
+        scanned = true
+        notFound = false
+        vm.barcode(value) {
+            product = it
+            notFound = it == null
+        }
+    }
+    val barcodePhoto =
+        rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null)
+                vm.run {
+                    val file =
+                        withContext(Dispatchers.IO) { FoodPhotoProcessor.prepare(context, uri) }
+                    val bitmap =
+                        withContext(Dispatchers.IO) { BitmapFactory.decodeFile(file.absolutePath) }
+                    val scanner = BarcodeScanning.getClient()
+                    try {
+                        val values =
+                            withContext(Dispatchers.IO) {
+                                com.google.android.gms.tasks.Tasks.await(
+                                    scanner.process(InputImage.fromBitmap(bitmap, 0)),
+                                    20,
+                                    java.util.concurrent.TimeUnit.SECONDS,
+                                )
+                            }
+                        val first =
+                            values.firstOrNull { it.rawValue != null }
+                                ?: error("Штрихкод не найден. Попробуйте более чёткое фото")
+                        lookup(
+                            if (first.format == Barcode.FORMAT_UPC_E)
+                                BarcodeValue.expandUpce(first.rawValue!!)
+                            else first.rawValue!!
+                        )
+                    } finally {
+                        scanner.close()
+                        bitmap.recycle()
+                        file.delete()
+                    }
+                }
+        }
+    var manual by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        LifeTopBar("Штрихкод")
+        Text("Наведите камеру на код упаковки", style = MaterialTheme.typography.bodyMedium)
+        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            if (granted && !scanned)
+                BarcodeCamera(torch, Modifier.fillMaxSize()) {
+                    haptic.performHapticFeedback(
+                        androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress
+                    )
+                    lookup(it)
+                }
+            else if (!granted)
+                PrimaryButton({ permission.launch(Manifest.permission.CAMERA) }) {
+                    Text("Разрешить камеру")
+                }
+            else if (loading)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Text("Ищем продукт…")
+                }
+            else
+                Text(
+                    "${code}\nПроверьте продукт и выберите порцию",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            if (granted && !scanned)
+                Box(
+                    Modifier.width(230.dp)
+                        .height(140.dp)
+                        .border(
+                            2.dp,
+                            androidx.compose.ui.graphics.Color.White,
+                            MaterialTheme.shapes.large,
+                        )
+                )
+        }
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+        if (notFound) {
+            Text("Продукт не найден. Можно сохранить значения с упаковки.")
+            TextButton({
+                product =
+                    CatalogFood(
+                        "barcode:$code",
+                        barcode = runCatching { BarcodeValue.normalized(code) }.getOrNull(),
+                        name = "",
+                        override = true,
+                    )
+            }) {
+                Text("Создать продукт")
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            if (granted)
+                TextButton({ torch = !torch }) { Text(if (torch) "Выключить свет" else "Фонарик") }
+            TextButton({
+                barcodePhoto.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        ActivityResultContracts.PickVisualMedia.ImageOnly
+                    )
+                )
+            }) {
+                Text("Фото")
+            }
+            TextButton({ manual = true }) { Text("Ввести код") }
+        }
+        if (scanned)
+            TextButton({
+                scanned = false
+                product = null
+                notFound = false
+            }) {
+                Text("Сканировать ещё")
+            }
+    }
+    if (manual)
+        LifeBottomSheet({ manual = false }) {
+            Text("Код с упаковки", style = MaterialTheme.typography.headlineSmall)
+            ProductField("Цифры штрихкода", code, { code = it }, true)
+            PrimaryButton(
+                {
+                    manual = false
+                    lookup(code)
+                },
+                Modifier.fillMaxWidth(),
+            ) {
+                Text("Найти продукт")
+            }
+        }
+    product?.let { CatalogPortionSheet(vm, it, date, { product = null }) }
+}
+
+@androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalGetImage::class])
+@Composable
+private fun BarcodeCamera(torch: Boolean, modifier: Modifier, found: (String) -> Unit) {
+    val context = LocalContext.current
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val latest = rememberUpdatedState(found)
+    val preview = remember { PreviewView(context) }
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    AndroidView({ preview }, modifier)
+    LaunchedEffect(torch, camera) { camera?.cameraControl?.enableTorch(torch) }
+    DisposableEffect(owner) {
+        val executor = Executors.newSingleThreadExecutor()
+        val scanner =
+            BarcodeScanning.getClient(
+                BarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(
+                        Barcode.FORMAT_EAN_13,
+                        Barcode.FORMAT_EAN_8,
+                        Barcode.FORMAT_UPC_A,
+                        Barcode.FORMAT_UPC_E,
+                    )
+                    .build()
+            )
+        val providerFuture = ProcessCameraProvider.getInstance(context)
+        var bound: ProcessCameraProvider? = null
+        val p = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
+        val analysis =
+            ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+        var delivered = false
+        var disposed = false
+        analysis.setAnalyzer(executor) { frame ->
+            val image = frame.image
+            if (image == null || delivered || disposed) {
+                frame.close()
+            } else {
+                scanner
+                    .process(InputImage.fromMediaImage(image, frame.imageInfo.rotationDegrees))
+                    .addOnSuccessListener { values ->
+                        values
+                            .firstOrNull { it.rawValue != null }
+                            ?.rawValue
+                            ?.let {
+                                if (!delivered && !disposed) {
+                                    delivered = true
+                                    latest.value(
+                                        values.firstOrNull()?.let { v ->
+                                            if (v.format == Barcode.FORMAT_UPC_E)
+                                                runCatching { BarcodeValue.expandUpce(it) }
+                                                    .getOrDefault(it)
+                                            else it
+                                        } ?: it
+                                    )
+                                }
+                            }
+                    }
+                    .addOnCompleteListener { frame.close() }
+            }
+        }
+        providerFuture.addListener(
+            {
+                if (!disposed)
+                    try {
+                        bound = providerFuture.get()
+                        camera =
+                            bound?.bindToLifecycle(
+                                owner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                p,
+                                analysis,
+                            )
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(
+                                context,
+                                "Камера недоступна. Введите код вручную",
+                                android.widget.Toast.LENGTH_LONG,
+                            )
+                            .show()
+                    }
+            },
+            ContextCompat.getMainExecutor(context),
+        )
+        preview.setOnTouchListener { _, event ->
+            if (event.action == android.view.MotionEvent.ACTION_UP) {
+                camera
+                    ?.cameraControl
+                    ?.startFocusAndMetering(
+                        FocusMeteringAction.Builder(
+                                preview.meteringPointFactory.createPoint(event.x, event.y)
+                            )
+                            .build()
+                    )
+                preview.performClick()
+            }
+            true
+        }
+        onDispose {
+            disposed = true
+            analysis.clearAnalyzer()
+            bound?.unbind(p, analysis)
+            scanner.close()
+            executor.shutdown()
+        }
+    }
+}

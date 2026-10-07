@@ -1,0 +1,300 @@
+package com.lifetrack.ui
+
+import android.app.Application
+import androidx.lifecycle.*
+import androidx.room.withTransaction
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+import java.util.UUID
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+class ProductViewModel(app: Application) : AndroidViewModel(app) {
+    val db = LifeStore.get(app)
+    val repo = ProductRepository(db)
+    val catalog = LocalCatalogProvider(db)
+    val food = LocalFoodRepository(db)
+    val health = HealthConnectSource(app, db)
+    val backend = BackendClient(app)
+    val data =
+        repo.snapshots.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            ProductSnapshot(),
+        )
+    val results = MutableStateFlow<List<CatalogFood>>(emptyList())
+    val searching = MutableStateFlow(false)
+    val error = MutableStateFlow<String?>(null)
+    val messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val syncing = MutableStateFlow(false)
+    val granted = MutableStateFlow<Set<String>>(emptySet())
+    var job: Job? = null
+
+    init {
+        viewModelScope.launch {
+            LocalLifeRepository(db)
+                .snapshots
+                .map { s ->
+                    listOf(
+                        s.product.health,
+                        s.product.habitRules,
+                        s.product.goalLinks,
+                        s.product.preferences,
+                        s.nutrition.water,
+                        s.accounts,
+                        s.transactions,
+                        s.habits,
+                        s.completions,
+                    )
+                }
+                .distinctUntilChanged()
+                .collect {
+                    try {
+                        updateRules()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        error.value = "Не удалось обновить автоматический прогресс"
+                    }
+                }
+        }
+        HealthSyncWorker.schedule(app)
+        ProductNotificationWorker.schedule(app)
+        viewModelScope.launch {
+            try {
+                granted.value = health.granted()
+                if (granted.value.isNotEmpty()) {
+                    health.sync()
+                    updateRules()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error.value = "Не удалось обновить здоровье. Сохранённые данные доступны"
+            }
+        }
+    }
+
+    fun run(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                error.value = null
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error.value =
+                    when (e) {
+                        is java.io.IOException -> "Нет связи с сервисом. Локальные данные доступны"
+                        is IllegalArgumentException -> e.message ?: "Проверьте данные"
+                        else -> e.message ?: "Не удалось выполнить действие"
+                    }
+                messages.emit(error.value!!)
+            }
+        }
+    }
+
+    fun search(q: String, remote: Boolean = true) {
+        job?.cancel()
+        job =
+            viewModelScope.launch {
+                searching.value = false
+                error.value = null
+                val local = catalog.local()
+                results.value =
+                    local.filter { q.isBlank() || "${it.name} ${it.brand}".contains(q, true) }
+                if (q.trim().length < 2 || !remote) return@launch
+                delay(450)
+                searching.value = true
+                try {
+                    results.value = catalog.search(q.trim())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    error.value = "Нет связи с каталогом. Показаны сохранённые продукты"
+                } finally {
+                    searching.value = false
+                }
+            }
+    }
+
+    fun barcode(code: String, onResult: (CatalogFood?) -> Unit) {
+        job?.cancel()
+        job =
+            viewModelScope.launch {
+                searching.value = true
+                error.value = null
+                try {
+                    onResult(catalog.getByBarcode(code))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    error.value = e.message ?: "Не удалось найти продукт"
+                } finally {
+                    searching.value = false
+                }
+            }
+    }
+
+    fun add(
+        food: CatalogFood,
+        amount: Long,
+        unit: String,
+        meal: String,
+        date: LocalDate,
+        done: () -> Unit,
+    ) = run {
+        this.food.save(
+            Portions.log(
+                food,
+                amount,
+                unit,
+                meal,
+                date
+                    .atTime(LocalTime.now())
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant()
+                    .toEpochMilli(),
+            )
+        )
+        messages.emit("Добавлено в дневник")
+        done()
+    }
+
+    fun preference(key: String, value: String) = run { repo.dao.put(ProductPreference(key, value)) }
+
+    fun sync() = run {
+        syncing.value = true
+        try {
+            granted.value = health.granted()
+            val n = health.sync()
+            updateRules()
+            messages.emit(
+                if (n > 0) "Здоровье обновлено"
+                else "Нет новых записей. Проверьте доступ и источники Health Connect"
+            )
+        } finally {
+            syncing.value = false
+        }
+    }
+
+    fun refreshPermissions() = run { granted.value = health.granted() }
+
+    fun weight(value: Long, bodyFat: Long?, date: LocalDate) = run {
+        require(value in 20_000..500_000) { "Укажите вес от 20 до 500 кг" }
+        bodyFat?.let { require(it in 1_000..75_000) }
+        val t =
+            date.atTime(LocalTime.now()).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val id = UUID.randomUUID().toString()
+        repo.dao.put(
+            HealthEntry(
+                "LOCAL:$id",
+                "LOCAL",
+                externalId = id,
+                kind = "WEIGHT",
+                start = t,
+                end = t,
+                value = value,
+                unit = "кг",
+            )
+        )
+        bodyFat?.let {
+            val f = UUID.randomUUID().toString()
+            repo.dao.put(
+                HealthEntry(
+                    "LOCAL:$f",
+                    "LOCAL",
+                    externalId = f,
+                    kind = "BODY_FAT",
+                    start = t,
+                    end = t,
+                    value = it,
+                    unit = "%",
+                )
+            )
+        }
+        updateRules()
+        messages.emit("Измерение сохранено")
+    }
+
+    suspend fun saveRecipe(name: String, servings: Int, logs: List<FoodLog>, id: Long = 0) {
+        require(name.isNotBlank() && servings in 1..1000 && logs.isNotEmpty())
+        db.withTransaction {
+            val saved = repo.dao.put(Recipe(id, name, servings))
+            val key = if (id == 0L) saved else id
+            repo.dao.clearIngredients(key)
+            logs.forEach {
+                repo.dao.put(
+                    RecipeIngredient(
+                        recipeId = key,
+                        name = it.customName,
+                        amount = it.amount,
+                        unit = it.unit,
+                        calories = it.calories,
+                        protein = it.protein,
+                        fat = it.fat,
+                        carbs = it.carbs,
+                    )
+                )
+            }
+        }
+    }
+
+    fun copyYesterday(date: LocalDate) = run {
+        val logs =
+            food.snapshots.first().logs.filter {
+                Instant.ofEpochMilli(it.dateTime).atZone(ZoneId.systemDefault()).toLocalDate() ==
+                    date.minusDays(1)
+            }
+        require(logs.isNotEmpty()) { "Вчера дневник был пуст" }
+        food.saveAll(
+            logs.map {
+                it.copy(
+                    id = 0,
+                    dateTime =
+                        Instant.ofEpochMilli(it.dateTime)
+                            .atZone(ZoneId.systemDefault())
+                            .plusDays(1)
+                            .toInstant()
+                            .toEpochMilli(),
+                    demo = false,
+                    recognitionDemo = false,
+                )
+            }
+        )
+        messages.emit("Вчерашнее питание скопировано")
+    }
+
+    suspend fun updateRules() = AutoProgressUpdater(db).update()
+
+    fun pay(sub: Subscription) = run {
+        val s = LocalLifeRepository(db).snapshots.first()
+        require(sub.active && sub.nextDay <= LocalDate.now().toEpochDay()) {
+            "Этот платёж ещё не наступил"
+        }
+        db.withTransaction {
+            val current = repo.dao.subscriptions().first().first { it.id == sub.id }
+            require(current.nextDay == sub.nextDay && current.active) { "Этот платёж уже записан" }
+            LocalLifeRepository(db)
+                .transaction(
+                    TransactionEntity(
+                        amount = sub.amount,
+                        type = "EXPENSE",
+                        accountId = sub.accountId,
+                        categoryId = sub.categoryId,
+                        description = sub.name,
+                    )
+                )
+            repo.dao.put(
+                sub.copy(
+                    nextDay =
+                        LocalDate.ofEpochDay(sub.nextDay)
+                            .plusMonths(sub.intervalMonths.toLong())
+                            .toEpochDay()
+                )
+            )
+        }
+        messages.emit("Платёж записан")
+    }
+}

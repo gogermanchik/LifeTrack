@@ -1,0 +1,667 @@
+package com.lifetrack.ui
+
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.*
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.*
+import androidx.compose.ui.draw.*
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.*
+import com.lifetrack.R
+import com.lifetrack.domain.*
+
+object LifeBrand {
+    val name: String
+        @Composable get() = stringResource(R.string.app_name)
+}
+
+@Composable
+fun BrandMark(modifier: Modifier = Modifier, color: Color = MaterialTheme.colorScheme.primary) {
+    Canvas(modifier.size(32.dp)) {
+        val r = size.width * .22f
+        drawCircle(
+            color,
+            r,
+            androidx.compose.ui.geometry.Offset(size.width * .32f, size.height * .32f),
+        )
+        drawCircle(
+            color,
+            r,
+            androidx.compose.ui.geometry.Offset(size.width * .70f, size.height * .32f),
+        )
+        drawCircle(
+            color,
+            r,
+            androidx.compose.ui.geometry.Offset(size.width * .32f, size.height * .70f),
+        )
+        drawCircle(
+            color.copy(alpha = .4f),
+            r,
+            androidx.compose.ui.geometry.Offset(size.width * .70f, size.height * .70f),
+        )
+    }
+}
+
+@Composable
+fun LifeTopBar(
+    title: String,
+    subtitle: String = "",
+    action: (() -> Unit)? = null,
+    actionIcon: ImageVector = Icons.Outlined.Add,
+    actionLabel: String = "Добавить",
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.headlineLarge)
+            if (subtitle.isNotBlank())
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+        }
+        if (action != null) LifeIconButton(actionIcon, actionLabel, action)
+    }
+}
+
+@Composable
+fun Page(
+    title: String,
+    subtitle: String = "",
+    action: (() -> Unit)? = null,
+    actionIcon: ImageVector = Icons.Outlined.Add,
+    actionLabel: String = "Добавить",
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(top = 12.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        LifeTopBar(title, subtitle, action, actionIcon, actionLabel)
+        content()
+    }
+}
+
+@Composable
+fun LifeSectionHeader(title: String, action: String? = null, onAction: () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+        if (action != null)
+            TextButton(onClick = onAction, contentPadding = PaddingValues(start = 12.dp)) {
+                Text(action, style = MaterialTheme.typography.labelLarge)
+                Icon(Icons.Outlined.ChevronRight, null, Modifier.size(16.dp))
+            }
+    }
+}
+
+@Composable
+fun Panel(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable fun Heading(text: String) = LifeSectionHeader(text)
+
+@Composable
+fun LifePrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    enabled: Boolean = true,
+) {
+    Button(
+        onClick,
+        modifier.defaultMinSize(minHeight = 48.dp),
+        enabled = enabled,
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        if (icon != null) {
+            Icon(icon, null, Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(text, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+fun PrimaryButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Button(
+        onClick,
+        modifier.defaultMinSize(minHeight = 48.dp),
+        enabled = enabled,
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        content = content,
+    )
+}
+
+@Composable
+fun SecondaryButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit,
+) {
+    FilledTonalButton(
+        onClick,
+        modifier.defaultMinSize(minHeight = 44.dp),
+        enabled = enabled,
+        shape = MaterialTheme.shapes.small,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        colors =
+            ButtonDefaults.filledTonalButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+        content = content,
+    )
+}
+
+@Composable
+fun LifeIconButton(icon: ImageVector, label: String, onClick: () -> Unit, tonal: Boolean = true) {
+    IconButton(
+        onClick,
+        Modifier.size(48.dp)
+            .then(
+                if (tonal)
+                    Modifier.clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                else Modifier
+            ),
+    ) {
+        Icon(icon, label, Modifier.size(22.dp))
+    }
+}
+
+@Composable
+fun LifeProgressBar(value: Long, target: Long, color: Color = MaterialTheme.colorScheme.primary) {
+    val p = if (target <= 0) 0f else percent(value, target).coerceIn(0, 100) / 100f
+    val animated by animateFloatAsState(p, tween(200), label = "progress")
+    Box(
+        Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(color.copy(alpha = .12f))
+    ) {
+        Box(Modifier.fillMaxWidth(animated).fillMaxHeight().clip(CircleShape).background(color))
+    }
+}
+
+@Composable
+fun Progress(value: Long, target: Long) {
+    LifeProgressBar(value, target)
+}
+
+@Composable
+fun LifeStat(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        androidx.compose.foundation.text.BasicText(
+            value,
+            style = MaterialTheme.typography.headlineSmall.copy(color = color),
+            maxLines = 1,
+            autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(12.sp, 24.sp, 1.sp),
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun LifeEmptyState(
+    title: String,
+    detail: String = "",
+    action: String? = null,
+    onAction: () -> Unit = {},
+    icon: ImageVector = Icons.Outlined.Inbox,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Box(
+            Modifier.size(44.dp)
+                .clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.surfaceContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                null,
+                Modifier.size(22.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            if (detail.isNotBlank())
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            if (action != null)
+                TextButton(onClick = onAction, contentPadding = PaddingValues(0.dp)) {
+                    Text(action)
+                }
+        }
+    }
+}
+
+@Composable fun Empty(text: String) = LifeEmptyState(text)
+
+@Composable
+fun LifeSegmentedControl(options: List<String>, selected: String, onSelect: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { o ->
+            val active = o == selected
+            val color by
+                animateColorAsState(
+                    if (active) MaterialTheme.colorScheme.surface else Color.Transparent,
+                    tween(180),
+                    label = "segment",
+                )
+            Box(
+                Modifier.weight(1f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(color)
+                    .selectable(active, onClick = { onSelect(o) })
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    display(o),
+                    style = MaterialTheme.typography.labelMedium,
+                    color =
+                        if (active) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LifeSettingRow(
+    title: String,
+    value: String = "",
+    onClick: () -> Unit,
+    icon: ImageVector? = null,
+    danger: Boolean = false,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (icon != null)
+            Icon(
+                icon,
+                null,
+                Modifier.size(22.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        Text(
+            title,
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (danger) lifeColors.expense else MaterialTheme.colorScheme.onSurface,
+        )
+        if (value.isNotBlank())
+            Text(
+                value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        Icon(
+            Icons.Outlined.ChevronRight,
+            null,
+            Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LifeBottomSheet(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.background,
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = MaterialTheme.colorScheme.outlineVariant)
+        },
+    ) {
+        Column(
+            Modifier.fillMaxWidth()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+fun LifeSheetAction(icon: ImageVector, title: String, detail: String = "", onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Box(
+            Modifier.size(44.dp)
+                .clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.surfaceContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, Modifier.size(22.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (detail.isNotBlank())
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+        }
+        Icon(
+            Icons.Outlined.ChevronRight,
+            null,
+            Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun Choice(label: String, value: String, options: List<String>, select: (String) -> Unit) {
+    var show by remember { mutableStateOf(false) }
+    LifeSettingRow(label, display(value.substringAfter(": ", value)), onClick = { show = true })
+    if (show)
+        LifeBottomSheet({ show = false }) {
+            Text(label, style = MaterialTheme.typography.headlineSmall)
+            options.forEach { n ->
+                Row(
+                    Modifier.fillMaxWidth()
+                        .selectable(
+                            n == value,
+                            onClick = {
+                                select(n)
+                                show = false
+                            },
+                        )
+                        .padding(vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        display(n.substringAfter(": ", n)),
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    if (n == value)
+                        Icon(Icons.Outlined.Check, null, tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+}
+
+@Composable
+fun Toggle(label: String, checked: Boolean, change: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        Switch(checked, change, Modifier.scale(.85f))
+    }
+}
+
+@Composable
+fun LifeInput(
+    label: String,
+    value: String,
+    change: (String) -> Unit,
+    numeric: Boolean = false,
+    hero: Boolean = false,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        BasicTextField(
+            value,
+            change,
+            Modifier.fillMaxWidth()
+                .clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            textStyle =
+                (if (hero) MaterialTheme.typography.displaySmall
+                    else MaterialTheme.typography.bodyLarge)
+                    .copy(color = MaterialTheme.colorScheme.onSurface),
+            singleLine = true,
+            keyboardOptions =
+                KeyboardOptions(
+                    keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text
+                ),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            decorationBox = { inner ->
+                Box {
+                    if (value.isEmpty())
+                        Text(
+                            if (numeric) "0" else "Введите значение",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style =
+                                if (hero) MaterialTheme.typography.displaySmall
+                                else MaterialTheme.typography.bodyLarge,
+                        )
+                    inner()
+                }
+            },
+        )
+    }
+}
+
+@Composable
+fun LifeOverflow(actions: List<Pair<String, () -> Unit>>) {
+    var show by remember { mutableStateOf(false) }
+    Box {
+        IconButton({ show = true }, Modifier.size(40.dp)) {
+            Icon(
+                Icons.Outlined.MoreHoriz,
+                "Действия",
+                Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(show, { show = false }) {
+            actions.forEach { (label, action) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            label,
+                            color =
+                                if (label.startsWith("Удалить")) lifeColors.expense
+                                else MaterialTheme.colorScheme.onSurface,
+                        )
+                    },
+                    onClick = {
+                        show = false
+                        action()
+                    },
+                )
+            }
+        }
+    }
+}
+
+fun lifeSection(route: String): String =
+    when {
+        route == "today" -> "today"
+        route.startsWith("nutrition") -> "nutrition"
+        route.startsWith("habit") -> "habits"
+        route.startsWith("finance") ||
+            route in
+                setOf(
+                    "bank-automation",
+                    "statement-import",
+                    "accounts",
+                    "categories",
+                    "budgets",
+                    "subscriptions",
+                    "report",
+                ) -> "finance"
+        else -> "more"
+    }
+
+@Composable
+fun LifeNavigationBar(
+    tabs: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    Column(Modifier.background(MaterialTheme.colorScheme.surface).navigationBarsPadding()) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)) {
+            val icons =
+                listOf(
+                    Icons.Outlined.Home,
+                    Icons.Outlined.Restaurant,
+                    Icons.Outlined.CheckCircle,
+                    Icons.Outlined.AccountBalanceWallet,
+                    Icons.Outlined.MoreHoriz,
+                )
+            tabs.forEachIndexed { i, t ->
+                val active = lifeSection(selected) == t.first
+                Column(
+                    Modifier.weight(1f)
+                        .selectable(active, onClick = { onSelect(t.first) }, role = Role.Tab)
+                        .padding(vertical = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Box(
+                        Modifier.size(width = 44.dp, height = 30.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (active) MaterialTheme.colorScheme.primaryContainer
+                                else Color.Transparent
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            icons[i],
+                            null,
+                            Modifier.size(21.dp),
+                            tint =
+                                if (active) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        t.second,
+                        style = MaterialTheme.typography.labelSmall,
+                        color =
+                            if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+fun display(value: String): String =
+    when (value) {
+        "BREAKFAST" -> "Завтрак"
+        "LUNCH" -> "Обед"
+        "DINNER" -> "Ужин"
+        "SNACK" -> "Перекус"
+        "EXPENSE" -> "Расход"
+        "REFUND" -> "Возврат"
+        "INCOME" -> "Доход"
+        "TRANSFER" -> "Перевод"
+        "DAILY" -> "Ежедневно"
+        "DAYS" -> "Дни недели"
+        "WEEKLY" -> "Несколько раз в неделю"
+        "SYSTEM" -> "Как в системе"
+        "LIGHT" -> "Светлая"
+        "DARK" -> "Тёмная"
+        "FINANCIAL" -> "Финансовая"
+        "LIFE" -> "Жизненная"
+        "CARD" -> "Карта"
+        "CASH" -> "Наличные"
+        "SAVINGS" -> "Накопления"
+        "CHECK" -> "Прогресс"
+        "BOOLEAN" -> "Отметка"
+        "COUNT" -> "Количество"
+        "DURATION" -> "Длительность"
+        "QUANTITY" -> "Объём"
+        "STEPS" -> "Шаги"
+        "SLEEP" -> "Сон"
+        "HYDRATION" -> "Вода"
+        "WORKOUT" -> "Тренировки"
+        "HABIT" -> "Привычка"
+        "WEIGHT" -> "Вес"
+        "CUSTOM" -> "Свои записи"
+        "CREDIT" -> "Кредитная карта"
+        "DEBT" -> "Долг"
+        "SPORT" -> "Спорт"
+        "BOOK" -> "Чтение"
+        "WATER" -> "Вода"
+        "LANGUAGE" -> "Языки"
+        "GREEN" -> "Зелёный"
+        "BLUE" -> "Синий"
+        "SAND" -> "Песочный"
+        else -> value
+    }

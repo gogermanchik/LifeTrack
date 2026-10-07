@@ -1,0 +1,269 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+
+@Composable
+fun FoodEditor(
+    log: FoodLog,
+    onDismiss: () -> Unit,
+    onSave: (FoodLog) -> Unit,
+    saveLabel: String = "Сохранить",
+) {
+    var name by remember(log) { mutableStateOf(log.customName) }
+    var amount by remember(log) { mutableStateOf(NutritionNumber.input(log.amount)) }
+    var unit by remember(log) { mutableStateOf(log.unit) }
+    var meal by remember(log) { mutableStateOf(log.mealType) }
+    var calories by remember(log) { mutableStateOf(NutritionNumber.input(log.calories)) }
+    var protein by remember(log) { mutableStateOf(NutritionNumber.input(log.protein)) }
+    var fat by remember(log) { mutableStateOf(NutritionNumber.input(log.fat)) }
+    var carbs by remember(log) { mutableStateOf(NutritionNumber.input(log.carbs)) }
+    var composition by remember(log) { mutableStateOf(log.composition) }
+    var error by remember { mutableStateOf("") }
+    LifeBottomSheet(onDismiss) {
+        Text(
+            if (log.id == 0L) "Добавить еду" else "Изменить еду",
+            style = MaterialTheme.typography.titleLarge,
+        )
+        NutritionField("Название", name, { name = it }, false)
+        Choice("Приём пищи", meal, MEALS) { meal = it }
+        NutritionField("Количество", amount, { amount = it })
+        Choice("Единица", unit, listOf("г", "мл", "порция")) { unit = it }
+        if (log.amount > 0 && log.calories > 0)
+            TextButton(
+                onClick = {
+                    try {
+                        val a = NutritionNumber.parse(amount, false)
+                        calories =
+                            NutritionNumber.input(
+                                FoodLogCalculator.scale(log.calories, a, log.amount)
+                            )
+                        protein =
+                            NutritionNumber.input(
+                                FoodLogCalculator.scale(log.protein, a, log.amount)
+                            )
+                        fat = NutritionNumber.input(FoodLogCalculator.scale(log.fat, a, log.amount))
+                        carbs =
+                            NutritionNumber.input(FoodLogCalculator.scale(log.carbs, a, log.amount))
+                    } catch (e: Exception) {
+                        error = "Проверьте количество"
+                    }
+                }
+            ) {
+                Text("Пересчитать по количеству")
+            }
+        Text("КБЖУ всей указанной порции", style = MaterialTheme.typography.labelLarge)
+        NutritionField("Калории · kcal", calories, { calories = it })
+        NutritionField("Белки · г", protein, { protein = it })
+        NutritionField("Жиры · г", fat, { fat = it })
+        NutritionField("Углеводы · г", carbs, { carbs = it })
+        NutritionField("Состав, необязательно", composition, { composition = it }, false)
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        Column(Modifier.fillMaxWidth()) {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+            PrimaryButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    try {
+                        val l =
+                            log.copy(
+                                customName = name.trim(),
+                                amount = NutritionNumber.parse(amount, false),
+                                unit = unit,
+                                mealType = meal,
+                                calories = NutritionNumber.parse(calories),
+                                protein = NutritionNumber.parse(protein),
+                                fat = NutritionNumber.parse(fat),
+                                carbs = NutritionNumber.parse(carbs),
+                                composition = composition,
+                            )
+                        LocalFoodRepository.validate(l)
+                        onSave(l)
+                    } catch (e: Exception) {
+                        error = e.message ?: "Проверьте значения"
+                    }
+                },
+            ) {
+                Text(saveLabel)
+            }
+        }
+    }
+}
+
+@Composable
+fun FoodCatalog(
+    s: NutritionSnapshot,
+    mode: String,
+    onDismiss: () -> Unit,
+    onSelect: (FoodLog) -> Unit,
+    onFavorite: (FoodItem) -> Unit,
+) {
+    var search by remember { mutableStateOf("") }
+    LifeBottomSheet(onDismiss) {
+        Text(
+            when (mode) {
+                "RECENT" -> "Недавние"
+                "FAVORITE" -> "Избранные"
+                else -> "Найти продукт"
+            },
+            style = MaterialTheme.typography.titleLarge,
+        )
+        NutritionField("Поиск", search, { search = it }, false)
+        Text(
+            "Локальный справочник. Средние значения — уточните по этикетке.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (mode == "RECENT") {
+            val recent =
+                s.logs
+                    .distinctBy { it.customName }
+                    .filter { it.customName.contains(search, true) }
+                    .take(30)
+            if (recent.isEmpty()) Text("Недавних продуктов пока нет")
+            recent.forEach { l ->
+                TextButton(
+                    onClick = {
+                        onSelect(
+                            l.copy(id = 0, source = "RECENT", demo = false, recognitionDemo = false)
+                        )
+                    },
+                    Modifier.fillMaxWidth(),
+                ) {
+                    Text("${l.customName} · ${NutritionNumber.rounded(l.calories)} ккал")
+                }
+            }
+        } else {
+            val items =
+                s.items.filter {
+                    (mode != "FAVORITE" || it.favorite) &&
+                        (it.name.contains(search, true) || it.brand.contains(search, true))
+                }
+            if (items.isEmpty()) Text("Ничего не найдено. Добавьте еду вручную.")
+            items.forEach { i ->
+                Row {
+                    TextButton(
+                        onClick = {
+                            onSelect(
+                                FoodLogCalculator.fromItem(
+                                    i,
+                                    i.servingSize,
+                                    "BREAKFAST",
+                                    System.currentTimeMillis(),
+                                    if (mode == "FAVORITE") "FAVORITE" else "SEARCH",
+                                )
+                            )
+                        },
+                        Modifier.weight(1f),
+                        contentPadding = PaddingValues(0.dp),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(i.name)
+                            Text(
+                                "${NutritionNumber.rounded(i.calories)} ккал / ${NutritionNumber.format(i.servingSize)} ${i.servingUnit}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    IconButton(onClick = { onFavorite(i) }) {
+                        Icon(
+                            if (i.favorite) Icons.Outlined.Favorite
+                            else Icons.Outlined.FavoriteBorder,
+                            "Избранное",
+                        )
+                    }
+                }
+            }
+        }
+        TextButton(onClick = onDismiss) { Text("Закрыть") }
+    }
+}
+
+@Composable
+fun NutritionGoalEditor(
+    goal: NutritionGoal?,
+    onDismiss: () -> Unit,
+    onSave: (NutritionGoal) -> Unit,
+) {
+    var kcal by remember { mutableStateOf(NutritionNumber.input(goal?.dailyCalories ?: 0)) }
+    var p by remember { mutableStateOf(NutritionNumber.input(goal?.proteinGrams ?: 0)) }
+    var f by remember { mutableStateOf(NutritionNumber.input(goal?.fatGrams ?: 0)) }
+    var c by remember { mutableStateOf(NutritionNumber.input(goal?.carbsGrams ?: 0)) }
+    var water by remember { mutableStateOf((goal?.waterMl ?: 0).toString()) }
+    var error by remember { mutableStateOf("") }
+    LifeBottomSheet(onDismiss) {
+        Text("Мои цели питания", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Вы задаёте цели самостоятельно. 0 — не отслеживать показатель.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        NutritionField("Калории за день · kcal", kcal, { kcal = it })
+        NutritionField("Белки · г", p, { p = it })
+        NutritionField("Жиры · г", f, { f = it })
+        NutritionField("Углеводы · г", c, { c = it })
+        NutritionField("Вода · мл", water, { water = it })
+        if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
+        Row {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+            PrimaryButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    try {
+                        val w = water.toLong()
+                        require(w in 0..10000)
+                        onSave(
+                            NutritionGoal(
+                                dailyCalories = NutritionNumber.parse(kcal),
+                                proteinGrams = NutritionNumber.parse(p),
+                                fatGrams = NutritionNumber.parse(f),
+                                carbsGrams = NutritionNumber.parse(c),
+                                waterMl = w,
+                            )
+                        )
+                    } catch (e: Exception) {
+                        error = "Проверьте числовые значения"
+                    }
+                },
+            ) {
+                Text("Сохранить")
+            }
+        }
+    }
+}
+
+@Composable
+fun WaterEditor(onDismiss: () -> Unit, onSave: (Long) -> Unit) {
+    var amount by remember { mutableStateOf("250") }
+    var error by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Добавить воду") },
+        text = {
+            Column {
+                NutritionField("Объём · мл", amount, { amount = it })
+                if (error)
+                    Text("Введите от 1 до 10 000 мл", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val n = amount.toLongOrNull()
+                    if (n != null && n in 1..10000) onSave(n) else error = true
+                }
+            ) {
+                Text("Добавить")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
+}

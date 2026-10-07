@@ -1,0 +1,89 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+import java.util.UUID
+
+@Composable
+fun CaffeineScreen(vm: ProductViewModel, date: LocalDate) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    var add by remember { mutableStateOf(false) }
+    val records = p.health.filter { it.kind == "CAFFEINE" && HealthMath.day(it) == date }
+    val total = HealthMath.daily(p.health, "CAFFEINE", date)
+    Page("Кофеин", action = { add = true }) {
+        Text(dateLabel(date), style = MaterialTheme.typography.bodySmall)
+        Panel {
+            Text(
+                total?.let { "${NutritionNumber.format(it)} мг" } ?: "Нет записей",
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Text(
+                "Учитываются только известные значения. Количество кофеина в кофе зависит от приготовления: LifeTrack не подставляет оценку автоматически.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        PrimaryButton({ add = true }, Modifier.fillMaxWidth()) { Text("Добавить по этикетке") }
+        records
+            .sortedByDescending { it.start }
+            .forEach { e ->
+                LifeSettingRow(
+                    e.detail.ifBlank { "Кофеин" },
+                    "${NutritionNumber.format(e.value)} мг · ${Instant.ofEpochMilli(e.start).atZone(ZoneId.systemDefault()).toLocalTime().withSecond(0).withNano(0)}",
+                    {},
+                )
+                if (e.source == "LOCAL")
+                    TextButton({ vm.run { vm.repo.dao.delete(e) } }) { Text("Удалить запись") }
+            }
+    }
+    if (add) {
+        var name by remember { mutableStateOf("") }
+        var amount by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf<String?>(null) }
+        LifeBottomSheet({ add = false }) {
+            Text("Известное количество", style = MaterialTheme.typography.headlineSmall)
+            ProductField("Напиток или продукт", name, { name = it })
+            ProductField("Кофеин, мг", amount, { amount = it }, true)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            PrimaryButton({
+                val value = milli(amount)
+                if (value == null || value !in 1..5000000)
+                    error = "Введите количество с этикетки в мг"
+                else
+                    vm.run {
+                        val id = UUID.randomUUID().toString()
+                        val time =
+                            date
+                                .atTime(LocalTime.now())
+                                .atZone(ZoneId.systemDefault())
+                                .toInstant()
+                                .toEpochMilli()
+                        require(time <= System.currentTimeMillis()) {
+                            "Дата не может быть в будущем"
+                        }
+                        vm.repo.dao.put(
+                            HealthEntry(
+                                "LOCAL:$id",
+                                "LOCAL",
+                                externalId = id,
+                                kind = "CAFFEINE",
+                                start = time,
+                                end = time,
+                                value = value,
+                                unit = "мг",
+                                detail = name.take(120),
+                            )
+                        )
+                        add = false
+                    }
+            }) {
+                Text("Сохранить")
+            }
+        }
+    }
+}

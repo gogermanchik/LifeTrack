@@ -1,0 +1,548 @@
+package com.lifetrack.ui
+
+import android.content.Intent
+import android.provider.Settings as AndroidSettings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lifetrack.banking.*
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+fun bankKindLabel(kind: String) =
+    when (kind) {
+        "PURCHASE" -> "Покупка"
+        "INCOME" -> "Поступление"
+        "TRANSFER" -> "Перевод"
+        "REFUND" -> "Возврат"
+        "CASH_WITHDRAWAL" -> "Снятие наличных"
+        "FEE" -> "Комиссия"
+        else -> "Нужно выбрать тип"
+    }
+
+@Composable
+fun BankAutomationScreen(vm: BankViewModel, s: Snapshot, navigate: (String) -> Unit) {
+    val context = LocalContext.current
+    val state by vm.data.collectAsStateWithLifecycle()
+    var consent by remember { mutableStateOf(false) }
+    var installed by remember { mutableStateOf<List<BankApp>>(emptyList()) }
+    var connected by remember { mutableStateOf(BankConsent.connected(context)) }
+    val error by vm.error.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        installed =
+            withContext(Dispatchers.IO) {
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                context.packageManager
+                    .queryIntentActivities(intent, 0)
+                    .map {
+                        val pkg = it.activityInfo.packageName
+                        BankApp(pkg, it.loadLabel(context.packageManager).toString())
+                    }
+                    .distinctBy { it.packageName }
+                    .filter {
+                        Regex(
+                                "(?iu)(банк|bank|сбер|sber|альфа|alfa|tinkoff|revolut|finance|wallet)"
+                            )
+                            .containsMatchIn(it.label + " " + it.packageName)
+                    }
+                    .sortedBy { it.label }
+            }
+    }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer =
+            androidx.lifecycle.LifecycleEventObserver { _, e ->
+                if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME)
+                    connected = BankConsent.connected(context)
+            }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    Page("Автоматизация") {
+        Text(
+            "АВТОМАТИЧЕСКИЕ ОПЕРАЦИИ",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Panel {
+            Text("Банковские уведомления", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "LifeTrack может предлагать расходы из уведомлений выбранных вами банков. Обработка происходит локально."
+            )
+            Text(
+                if (connected) "Доступ Android разрешён" else "Доступ не подключён",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            PrimaryButton({ consent = true }) {
+                Text(if (connected) "Управлять доступом" else "Подключить")
+            }
+        }
+        Section("Какие приложения использовать?") {
+            if (installed.isEmpty())
+                Text(
+                    "Не найдено установленных банковских приложений. Установите приложение своего банка или импортируйте выписку. Посторонние уведомления не обрабатываются."
+                )
+            installed.forEach { app ->
+                val saved = state.apps.firstOrNull { it.packageName == app.packageName } ?: app
+                Toggle(app.label, saved.enabled) { vm.select(saved.copy(enabled = it)) }
+                if (saved.enabled)
+                    Choice(
+                        "Счёт для ${app.label}",
+                        s.accounts.firstOrNull { it.id == saved.accountId }?.name
+                            ?: "Выбрать при подтверждении",
+                        listOf("Выбрать при подтверждении") + s.accounts.map { it.name },
+                    ) { name ->
+                        vm.select(
+                            saved.copy(accountId = s.accounts.firstOrNull { it.name == name }?.id)
+                        )
+                    }
+            }
+        }
+        val mode = s.product.preferences.firstOrNull { it.key == "bank_mode" }?.value ?: "SUGGEST"
+        Choice(
+            "Режим",
+            if (mode == "AUTO") "Добавлять автоматически" else "Предлагать добавить",
+            listOf("Предлагать добавить", "Добавлять автоматически"),
+        ) { value ->
+            vm.run {
+                vm.db
+                    .productDao()
+                    .put(
+                        ProductPreference(
+                            "bank_mode",
+                            if (value == "Добавлять автоматически") "AUTO" else "SUGGEST",
+                        )
+                    )
+            }
+        }
+        Text(
+            "Автодобавление применяется только к проверенным форматам с высокой уверенностью. Общий парсер предлагает операции для проверки. Переводы, снятия и возможные дубли требуют подтверждения.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Toggle(
+            "Тихое уведомление о проверке",
+            s.product.preferences.firstOrNull { it.key == "bank_quiet_notifications" }?.value ==
+                "true",
+        ) { value ->
+            vm.run {
+                vm.db
+                    .productDao()
+                    .put(ProductPreference("bank_quiet_notifications", value.toString()))
+            }
+        }
+        LifeSettingRow(
+            "Очередь проверки",
+            "${state.candidates.count{it.state=="PENDING"}} операций",
+            { navigate("finance-inbox") },
+        )
+        LifeSettingRow(
+            "Импорт выписки",
+            "CSV или XLSX · локально",
+            { navigate("statement-import") },
+        )
+        Section("Ваши правила магазинов") {
+            if (state.rules.isEmpty())
+                Text(
+                    "При исправлении категории предложим запомнить ваш выбор.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            state.rules.forEach { r ->
+                LifeSettingRow(
+                    r.merchant,
+                    s.categories.firstOrNull { it.id == r.categoryId }?.name.orEmpty(),
+                    {},
+                )
+                TextButton({ vm.run { vm.repo.dao.delete(r) } }) { Text("Удалить правило") }
+            }
+        }
+        Text(
+            "LifeTrack не просит пароль банка, не читает SMS/OTP и не управляет банковским приложением. Полный текст уведомления не сохраняется и не отправляется на сервер.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+    }
+    if (consent)
+        AlertDialog(
+            { consent = false },
+            title = { Text("Доступ к уведомлениям") },
+            text = {
+                Text(
+                    "Android попросит разрешить LifeTrack читать уведомления. LifeTrack сразу отбирает только выбранные вами банковские приложения и обрабатывает их локально. Уведомления других приложений не сохраняются и не анализируются."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    consent = false
+                    context.startActivity(
+                        Intent(AndroidSettings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                    )
+                }) {
+                    Text("Открыть настройки Android")
+                }
+            },
+            dismissButton = { TextButton({ consent = false }) { Text("Отмена") } },
+        )
+}
+
+@Composable
+fun FinanceInboxScreen(vm: BankViewModel, s: Snapshot) {
+    val bank by vm.data.collectAsStateWithLifecycle()
+    val rows = bank.candidates.filter { it.state == "PENDING" }
+    var selected by remember { mutableStateOf<BankCandidate?>(null) }
+    val error by vm.error.collectAsStateWithLifecycle()
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        LifeTopBar("Проверка", "${rows.size} операций")
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+        if (rows.isEmpty())
+            LifeEmptyState(
+                "Всё разобрано",
+                "Здесь появятся операции из выбранных банковских уведомлений и спорные строки выписки.",
+            )
+        if (
+            rows.any {
+                it.confidence == "HIGH" &&
+                    !it.duplicate &&
+                    it.kind in listOf("PURCHASE", "INCOME", "FEE")
+            }
+        )
+            TextButton({
+                vm.run {
+                    rows
+                        .filter {
+                            it.confidence == "HIGH" &&
+                                !it.duplicate &&
+                                it.kind in listOf("PURCHASE", "INCOME", "FEE")
+                        }
+                        .forEach { r ->
+                            val account =
+                                bank.apps.firstOrNull { it.packageName == r.packageName }?.accountId
+                                    ?: r.packageName.removePrefix("statement:").toLongOrNull()
+                            if (account != null)
+                                vm.repo.confirm(
+                                    r,
+                                    account,
+                                    MerchantCategorizer.suggest(
+                                        BankRepository.parsed(r),
+                                        s.categories,
+                                        bank.rules,
+                                    ),
+                                )
+                        }
+                }
+            }) {
+                Text("Подтвердить все уверенные")
+            }
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 20.dp),
+        ) {
+            items(rows, key = { it.id }) { r ->
+                Panel {
+                    Text(
+                        r.rawMerchant.ifBlank { bankKindLabel(r.kind) },
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        MoneyFormatter.format(r.amount, r.currency),
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+                    Text(
+                        "${bankKindLabel(r.kind)} · ${day(r.timestamp)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    val category =
+                        MerchantCategorizer.suggest(
+                            BankRepository.parsed(r),
+                            s.categories,
+                            bank.rules,
+                        )
+                    Text(
+                        if (r.kind in listOf("TRANSFER", "CASH_WITHDRAWAL")) "Между своими счетами"
+                        else
+                            s.categories.firstOrNull { it.id == category }?.name
+                                ?: "Выберите категорию",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (r.duplicate)
+                        Text(
+                            "Возможный дубль — проверьте перед сохранением",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    Row {
+                        TextButton({ selected = r }) { Text("Проверить и добавить") }
+                        TextButton({ vm.run { vm.repo.reject(r) } }) { Text("Отклонить") }
+                    }
+                }
+            }
+        }
+    }
+    selected?.let { BankCandidateSheet(vm, s, it) { selected = null } }
+}
+
+@Composable
+fun BankCandidateSheet(vm: BankViewModel, s: Snapshot, row: BankCandidate, dismiss: () -> Unit) {
+    var merchant by remember { mutableStateOf(row.rawMerchant) }
+    var amount by remember { mutableStateOf(MoneyFormatter.input(row.amount)) }
+    var kind by remember { mutableStateOf(row.kind) }
+    var account by remember {
+        mutableStateOf(
+            s.banking.apps.firstOrNull { it.packageName == row.packageName }?.accountId
+                ?: row.packageName.removePrefix("statement:").toLongOrNull()
+                ?: s.accounts.firstOrNull { it.currency == row.currency }?.id
+        )
+    }
+    var toAccount by remember { mutableStateOf<Long?>(null) }
+    var category by remember {
+        mutableStateOf(
+            MerchantCategorizer.suggest(BankRepository.parsed(row), s.categories, s.banking.rules)
+        )
+    }
+    var learn by remember { mutableStateOf(false) }
+    var allowDuplicate by remember { mutableStateOf(false) }
+    val error by vm.error.collectAsStateWithLifecycle()
+    LifeBottomSheet(dismiss) {
+        Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Проверьте операцию", style = MaterialTheme.typography.headlineSmall)
+            ProductField("Магазин или описание", merchant, { merchant = it })
+            ProductField("Сумма, ${row.currency}", amount, { amount = it }, true)
+            val kinds = BankKind.entries.filter { it != BankKind.UNKNOWN }
+            Choice("Тип", bankKindLabel(kind), kinds.map { bankKindLabel(it.name) }) { label ->
+                kind = kinds.first { bankKindLabel(it.name) == label }.name
+                category = null
+            }
+            Choice(
+                "Счёт",
+                s.accounts.firstOrNull { it.id == account }?.name.orEmpty(),
+                s.accounts.filter { it.currency == row.currency }.map { it.name },
+            ) { v ->
+                account = s.accounts.first { it.name == v && it.currency == row.currency }.id
+            }
+            if (kind in listOf("TRANSFER", "CASH_WITHDRAWAL")) {
+                Choice(
+                    "На собственный счёт",
+                    s.accounts.firstOrNull { it.id == toAccount }?.name.orEmpty(),
+                    s.accounts
+                        .filter { it.id != account && it.currency == row.currency }
+                        .map { it.name },
+                ) { v ->
+                    toAccount = s.accounts.first { it.name == v && it.id != account }.id
+                }
+                Text(
+                    "Перевод между своими счетами не считается расходом или доходом. Снятие можно перевести на счёт наличных.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                val type = if (kind == "INCOME") "INCOME" else "EXPENSE"
+                Choice(
+                    "Категория",
+                    s.categories.firstOrNull { it.id == category }?.name.orEmpty(),
+                    s.categories.filter { it.type == type }.map { it.name },
+                ) { v ->
+                    category = s.categories.first { it.name == v && it.type == type }.id
+                }
+                Toggle("Всегда относить этот магазин сюда", learn) { learn = it }
+            }
+            if (row.duplicate)
+                Toggle("Проверил: это отдельная операция", allowDuplicate) { allowDuplicate = it }
+            Text(
+                "${day(row.timestamp)} · ${if(row.source=="STATEMENT_IMPORT")"Из выписки" else "Из уведомления"}${row.accountHint.takeIf{it.isNotBlank()}?.let{" · карта •$it"}.orEmpty()}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+            PrimaryButton(
+                {
+                    vm.run {
+                        vm.repo.confirm(
+                            row,
+                            account ?: error("Выберите счёт"),
+                            category,
+                            BankKind.valueOf(kind),
+                            merchant,
+                            MoneyFormatter.parse(amount),
+                            toAccount,
+                            learn,
+                            allowDuplicate,
+                        )
+                        vm.messages.emit("Операция добавлена")
+                        dismiss()
+                    }
+                },
+                Modifier.fillMaxWidth(),
+            ) {
+                Text("Подтвердить")
+            }
+        }
+    }
+}
+
+@Composable
+fun StatementImportScreen(vm: BankViewModel, s: Snapshot) {
+    val context = LocalContext.current
+    val table by vm.table.collectAsStateWithLifecycle()
+    val mapping by vm.mapping.collectAsStateWithLifecycle()
+    val rows by vm.rows.collectAsStateWithLifecycle()
+    val account by vm.importAccount.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val error by vm.error.collectAsStateWithLifecycle()
+    var profile by rememberSaveable { mutableStateOf("Моя выписка") }
+    var confirm by remember { mutableStateOf(false) }
+    val picker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null)
+                vm.run {
+                    val content =
+                        withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                val out = java.io.ByteArrayOutputStream()
+                                val buffer = ByteArray(8192)
+                                var n = input.read(buffer)
+                                while (n != -1) {
+                                    require(out.size() + n <= 5_000_000) { "Файл больше 5 МБ" }
+                                    out.write(buffer, 0, n)
+                                    n = input.read(buffer)
+                                }
+                                out.toByteArray()
+                            } ?: error("Файл недоступен")
+                        }
+                    vm.load(content, content.take(2) == listOf(80.toByte(), 75.toByte()))
+                }
+        }
+    Page("Импорт выписки") {
+        Text(
+            "CSV и XLSX обрабатываются на устройстве. Перед импортом проверьте колонки, счёт и суммы."
+        )
+        PrimaryButton({
+            picker.launch(
+                arrayOf(
+                    "text/*",
+                    "application/csv",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream",
+                )
+            )
+        }) {
+            Text("Выбрать файл")
+        }
+        Choice(
+            "Счёт выписки",
+            s.accounts.firstOrNull { it.id == account }?.name ?: "Выберите счёт",
+            s.accounts.map { it.name },
+        ) { v ->
+            vm.importAccount.value = s.accounts.first { it.name == v }.id
+            vm.rows.value = emptyList()
+        }
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        table?.let { t ->
+            Text("${t.rows.size} строк", style = MaterialTheme.typography.titleMedium)
+            val options = listOf("Не используется") + t.headers.mapIndexed { i, h -> "${i+1}: $h" }
+            fun selected(i: Int): String {
+                return options.getOrElse(i + 1) { "Не используется" }
+            }
+            fun index(v: String): Int {
+                return options.indexOf(v) - 1
+            }
+            Choice("Дата", selected(mapping.date), options) {
+                vm.mapping.value = mapping.copy(date = index(it))
+            }
+            Choice("Сумма", selected(mapping.amount), options) {
+                vm.mapping.value = mapping.copy(amount = index(it))
+            }
+            Choice("Валюта", selected(mapping.currency), options) {
+                vm.mapping.value = mapping.copy(currency = index(it))
+            }
+            Choice("Магазин", selected(mapping.merchant), options) {
+                vm.mapping.value = mapping.copy(merchant = index(it))
+            }
+            Choice("Описание", selected(mapping.description), options) {
+                vm.mapping.value = mapping.copy(description = index(it))
+            }
+            Choice("Тип", selected(mapping.type), options) {
+                vm.mapping.value = mapping.copy(type = index(it))
+            }
+            Choice("Время", selected(mapping.time), options) {
+                vm.mapping.value = mapping.copy(time = index(it))
+            }
+            Choice("Внешний ID", selected(mapping.externalId), options) {
+                vm.mapping.value = mapping.copy(externalId = index(it))
+            }
+            Text(
+                "Если колонка типа не задана, минус означает расход, плюс — доход. При явном типе «Расход» сумма может быть положительной. Возвраты и переводы определяются по типу или описанию.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            ProductField("Имя профиля колонок", profile, { profile = it })
+            PrimaryButton({
+                val currency = s.accounts.firstOrNull { it.id == account }?.currency
+                if (currency == null) vm.error.value = "Выберите счёт" else vm.preview(currency)
+            }) {
+                Text("Посмотреть операции")
+            }
+        }
+        if (rows.isNotEmpty()) {
+            val existing =
+                rows.count { r ->
+                    s.banking.candidates.any {
+                        it.identity == BankFingerprint.hash("$account|${r.identity}")
+                    }
+                }
+            val invalid = rows.count { it.error != null }
+            val review = rows.count { it.parsed?.confidence == Confidence.LOW }
+            Panel {
+                Text("Будет обработано ${rows.size}", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Уже импортированы: $existing\nТребуют проверки: $review\nНекорректные строки: $invalid"
+                )
+                Text(
+                    "Выписка может уточнить ранее подтверждённые банковские уведомления. Категории, исправленные вами, сохраняются.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            rows.take(30).forEach { r ->
+                val p = r.parsed
+                LifeSettingRow(
+                    p?.rawMerchant?.ifBlank { bankKindLabel(p.type.name) } ?: "Строка ${r.line}",
+                    p?.let {
+                        "${MoneyFormatter.format(it.amount,it.currency)} · ${day(it.timestamp)} · ${bankKindLabel(it.type.name)}"
+                    } ?: r.error.orEmpty(),
+                    {},
+                )
+            }
+            if (rows.size > 30)
+                Text("Показаны первые 30 строк", style = MaterialTheme.typography.bodySmall)
+            PrimaryButton({ confirm = true }, Modifier.fillMaxWidth()) { Text("Импортировать") }
+        }
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+    }
+    if (confirm)
+        AlertDialog(
+            { confirm = false },
+            title = { Text("Импортировать выписку?") },
+            text = {
+                Text(
+                    "Проверенные строки добавятся в финансы. Спорные операции будут предложены в очереди. Некорректные строки пропускаются; исходный файл не сохраняется."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    confirm = false
+                    vm.import(s, profile)
+                }) {
+                    Text("Импортировать")
+                }
+            },
+            dismissButton = { TextButton({ confirm = false }) { Text("Отмена") } },
+        )
+}

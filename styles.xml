@@ -1,0 +1,118 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.unit.dp
+import com.lifetrack.domain.*
+
+@Composable
+fun LineChart(values: List<Long>, label: String) {
+    val color = MaterialTheme.colorScheme.primary
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    Canvas(Modifier.fillMaxWidth().height(128.dp).semantics { contentDescription = label }) {
+        repeat(4) {
+            val y = size.height * it / 3
+            drawLine(grid.copy(alpha = .6f), Offset(0f, y), Offset(size.width, y))
+        }
+        if (values.isEmpty()) return@Canvas
+        val min = values.minOrNull()!!.toBigDecimal()
+        val range = (values.maxOrNull()!!.toBigDecimal() - min).max(java.math.BigDecimal.ONE)
+        val points =
+            values.mapIndexed { i, v ->
+                Offset(
+                    size.width * i / (values.size - 1).coerceAtLeast(1),
+                    size.height -
+                        (v.toBigDecimal() - min)
+                            .divide(range, 8, java.math.RoundingMode.HALF_UP)
+                            .toFloat() * size.height,
+                )
+            }
+        val path = Path()
+        points.forEachIndexed { i, p ->
+            if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+        }
+        drawPath(path, color, style = Stroke(3.dp.toPx()))
+        if (points.size == 1) drawCircle(color, 4.dp.toPx(), points.first())
+    }
+}
+
+@Composable
+fun BarChart(values: List<Long>, label: String) {
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.fillMaxWidth().height(120.dp).semantics { contentDescription = label }) {
+        val max = values.maxOrNull()?.coerceAtLeast(1) ?: 1
+        val width = size.width / values.size.coerceAtLeast(1)
+        values.forEachIndexed { i, v ->
+            val height =
+                v.toBigDecimal()
+                    .divide(max.toBigDecimal(), 8, java.math.RoundingMode.HALF_UP)
+                    .toFloat() * size.height
+            drawRoundRect(
+                if (i == values.lastIndex) color else color.copy(alpha = .38f),
+                Offset(i * width + 2, size.height - height),
+                Size((width - 4).coerceAtLeast(1f), height),
+                cornerRadius = CornerRadius(4.dp.toPx()),
+            )
+        }
+    }
+}
+
+@Composable
+fun DonutChart(values: List<Pair<String, Long>>, currency: String) {
+    val total = sumExact(values.map { it.second })
+    val colors =
+        listOf(
+            MaterialTheme.colorScheme.primary,
+            Color(0xFF698C83),
+            Color(0xFFACBEB6),
+            Color(0xFFB4A782),
+            Color(0xFF73899A),
+            Color(0xFF7C766D),
+        )
+    if (total <= 0) {
+        Empty("Расходов пока нет.")
+        return
+    }
+    Canvas(
+        Modifier.fillMaxWidth().height(150.dp).semantics {
+            contentDescription = "Расходы по категориям"
+        }
+    ) {
+        var start = -90f
+        values.forEachIndexed { i, p ->
+            val sweep =
+                p.second
+                    .toBigDecimal()
+                    .multiply(java.math.BigDecimal(360))
+                    .divide(total.toBigDecimal(), 8, java.math.RoundingMode.HALF_UP)
+                    .toFloat()
+            drawArc(
+                colors[i % colors.size],
+                start,
+                sweep,
+                false,
+                Offset((size.width - size.height) / 2 + 14, 14f),
+                Size(size.height - 28, size.height - 28),
+                style = Stroke(22.dp.toPx()),
+            )
+            start += sweep
+        }
+    }
+    values.forEachIndexed { i, p ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Canvas(Modifier.padding(top = 7.dp).size(10.dp)) { drawCircle(colors[i % colors.size]) }
+            Spacer(Modifier.width(8.dp))
+            Text(p.first, modifier = Modifier.weight(1f))
+            Text("${MoneyFormatter.format(p.second,currency)} · ${percent(p.second,total)}%")
+        }
+    }
+}

@@ -1,0 +1,285 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+
+@Composable
+fun NutritionScreen(
+    vm: NutritionViewModel,
+    photo: (String) -> Unit,
+    analytics: () -> Unit,
+    addRequested: Boolean = false,
+    consumeAdd: () -> Unit = {},
+    navigate: (String) -> Unit = {},
+    copyYesterday: () -> Unit = {},
+) {
+    val s by vm.data.collectAsStateWithLifecycle()
+    val date by vm.date.collectAsStateWithLifecycle()
+    val d = NutritionCalculator.daily(s, date)
+    var add by remember { mutableStateOf(false) }
+    LaunchedEffect(addRequested) {
+        if (addRequested) {
+            add = true
+            consumeAdd()
+        }
+    }
+    var goal by remember { mutableStateOf(false) }
+    var catalog by remember { mutableStateOf<String?>(null) }
+    var editor by remember { mutableStateOf<FoodLog?>(null) }
+    var delete by remember { mutableStateOf<FoodLog?>(null) }
+    var water by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    fun blank() =
+        FoodLog(
+            customName = "",
+            mealType = "BREAKFAST",
+            amount = 100000,
+            calories = 0,
+            protein = 0,
+            fat = 0,
+            carbs = 0,
+            dateTime = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+        )
+    Page("Питание", action = { add = true }) {
+        DateSelector(date) { vm.date.value = it }
+        NutritionSummary(d, s.goal) { goal = true }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            LifePrimaryButton(
+                "Сфотографировать еду",
+                { photo("camera") },
+                Modifier.fillMaxWidth(),
+                Icons.Outlined.PhotoCamera,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TextButton({ navigate("nutrition-catalog") }) { Text("Найти продукт") }
+                TextButton({ navigate("nutrition-barcode") }) { Text("Штрихкод") }
+                LifeOverflow(
+                    listOf(
+                        "Рецепты" to { navigate("nutrition-recipes") },
+                        "Прочитать этикетку" to { navigate("nutrition-label") },
+                        "Кофеин" to { navigate("nutrition-caffeine") },
+                        "Скопировать вчера" to copyYesterday,
+                    )
+                )
+            }
+        }
+        if (d.logs.isEmpty())
+            LifeEmptyState(
+                if (date == LocalDate.now()) "С чего начнём сегодня?" else "В этот день пока пусто",
+                "Добавьте еду — дневник посчитает калории и БЖУ.",
+                "Добавить еду",
+                { add = true },
+                Icons.Outlined.Restaurant,
+            )
+        MEALS.forEach { meal ->
+            val logs = d.logs.filter { it.mealType == meal }
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        mealName(meal),
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Text(
+                        "${NutritionNumber.rounded(d.meals[meal]?.calories ?: 0)} ккал",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IconButton({ editor = blank().copy(mealType = meal) }, Modifier.size(40.dp)) {
+                        Icon(
+                            Icons.Outlined.Add,
+                            "Добавить: ${mealName(meal)}",
+                            Modifier.size(20.dp),
+                        )
+                    }
+                }
+                if (logs.isEmpty())
+                    Text(
+                        "Пока не добавлено",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                logs.forEach { log ->
+                    LifeMealRow(
+                        log,
+                        onOpen = { editor = log },
+                        actions =
+                            listOf(
+                                "Изменить" to { editor = log },
+                                "В избранное" to
+                                    {
+                                        vm.launch {
+                                            vm.repository.favoriteFromLog(log)
+                                            vm.messages.emit("В избранном")
+                                        }
+                                    },
+                                "Удалить" to { delete = log },
+                            ),
+                    )
+                }
+            }
+        }
+        Panel {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.WaterDrop,
+                    null,
+                    Modifier.size(22.dp),
+                    tint = lifeColors.protein,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Вода", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if ((s.goal?.waterMl ?: 0) > 0)
+                        "${NutritionNumber.format(d.waterMl)} / ${NutritionNumber.format(s.goal!!.waterMl)} л"
+                    else "${NutritionNumber.format(d.waterMl)} л",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
+            if ((s.goal?.waterMl ?: 0) > 0)
+                LifeProgressBar(d.waterMl, s.goal!!.waterMl, lifeColors.protein)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryButton({ vm.addWater(250) }, Modifier.weight(1f)) { Text("+250 мл") }
+                SecondaryButton({ vm.addWater(500) }, Modifier.weight(1f)) { Text("+500 мл") }
+                LifeIconButton(Icons.Outlined.MoreHoriz, "Порции воды", { water = true })
+            }
+        }
+        LifeSettingRow("Аналитика питания", "7 / 30 дней", analytics, Icons.Outlined.BarChart)
+    }
+    if (add)
+        LifeBottomSheet({ add = false }) {
+            Text("Добавить еду", style = MaterialTheme.typography.headlineSmall)
+            listOf(
+                    "camera" to "Сфотографировать",
+                    "gallery" to "Выбрать фото",
+                    "SEARCH" to "Найти продукт",
+                    "MANUAL" to "Добавить вручную",
+                    "RECENT" to "Недавние",
+                    "FAVORITE" to "Избранные",
+                )
+                .forEach { (type, name) ->
+                    LifeSheetAction(
+                        when (type) {
+                            "camera",
+                            "gallery" -> Icons.Outlined.PhotoCamera
+                            "FAVORITE" -> Icons.Outlined.FavoriteBorder
+                            else -> Icons.Outlined.Restaurant
+                        },
+                        name,
+                        onClick = {
+                            add = false
+                            when (type) {
+                                "camera",
+                                "gallery" -> photo(type)
+                                "MANUAL" -> editor = blank()
+                                "SEARCH" -> navigate("nutrition-catalog")
+                                else -> catalog = type
+                            }
+                        },
+                    )
+                }
+        }
+    catalog?.let { mode ->
+        FoodCatalog(
+            s,
+            mode,
+            onDismiss = { catalog = null },
+            onSelect = { log ->
+                editor =
+                    log.copy(
+                        dateTime =
+                            date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    )
+                catalog = null
+            },
+            onFavorite = { vm.launch { vm.repository.favorite(it) } },
+        )
+    }
+    editor?.let { log ->
+        FoodEditor(
+            log,
+            onDismiss = { editor = null },
+            onSave = {
+                vm.save(it) {
+                    haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                    editor = null
+                }
+            },
+        )
+    }
+    if (goal)
+        NutritionGoalEditor(
+            s.goal,
+            onDismiss = { goal = false },
+            onSave = {
+                vm.launch {
+                    vm.repository.goal(it)
+                    goal = false
+                    vm.messages.emit("Цели сохранены")
+                }
+            },
+        )
+    if (water)
+        LifeBottomSheet({ water = false }) {
+            Text("Вода за день", style = MaterialTheme.typography.headlineSmall)
+            var amount by remember { mutableStateOf("250") }
+            var error by remember { mutableStateOf(false) }
+            LifeInput("Своя порция · мл", amount, { amount = it }, true)
+            LifePrimaryButton(
+                "Добавить воду",
+                {
+                    val n = amount.toLongOrNull()
+                    if (n != null && n in 1..10000) {
+                        vm.addWater(n)
+                        water = false
+                    } else error = true
+                },
+                Modifier.fillMaxWidth(),
+            )
+            if (error) Text("От 1 до 10 000 мл", color = lifeColors.expense)
+            s.water
+                .filter { day(it.dateTime) == date }
+                .forEach { w ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${w.amountMl} мл", Modifier.weight(1f))
+                        LifeOverflow(listOf("Удалить" to { vm.deleteWater(w) }))
+                    }
+                }
+        }
+    delete?.let { log ->
+        AlertDialog(
+            onDismissRequest = { delete = null },
+            title = { Text("Удалить еду?") },
+            text = { Text(log.customName) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        vm.delete(log)
+                        delete = null
+                    }
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = { TextButton(onClick = { delete = null }) { Text("Отмена") } },
+        )
+    }
+}

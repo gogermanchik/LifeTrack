@@ -1,0 +1,682 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+import java.time.*
+import kotlinx.coroutines.launch
+
+@Composable
+fun RecipeScreen(vm: ProductViewModel, date: LocalDate) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    var editing by remember { mutableStateOf<Recipe?>(null) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var servings by rememberSaveable { mutableStateOf("1") }
+    var logs by remember { mutableStateOf<List<FoodLog>>(emptyList()) }
+    var picker by remember { mutableStateOf(false) }
+    var foods by remember { mutableStateOf<List<CatalogFood>>(emptyList()) }
+    var ingredient by remember { mutableStateOf<CatalogFood?>(null) }
+    var chosen by remember { mutableStateOf<Recipe?>(null) }
+    var count by rememberSaveable { mutableStateOf("1") }
+    var meal by rememberSaveable { mutableStateOf("LUNCH") }
+    val scope = rememberCoroutineScope()
+    val error by vm.error.collectAsStateWithLifecycle()
+    Page(
+        if (editing == null) "Рецепты" else "Ваш рецепт",
+        action = {
+            editing = Recipe(name = "")
+            name = ""
+            servings = "1"
+            logs = emptyList()
+        },
+    ) {
+        if (editing != null) {
+            ProductField("Название рецепта", name, { name = it })
+            ProductField("Количество порций", servings, { servings = it }, true)
+            logs.forEachIndexed { i, l ->
+                LifeSettingRow(
+                    l.customName,
+                    "${l.amount/1000.0} ${l.unit} · ${l.calories/1000} ккал",
+                    {},
+                )
+                TextButton({ logs = logs.filterIndexed { j, _ -> j != i } }) {
+                    Text("Убрать ингредиент")
+                }
+            }
+            TextButton({
+                scope.launch {
+                    foods = vm.catalog.local()
+                    picker = true
+                }
+            }) {
+                Text("Добавить ингредиент")
+            }
+            if (logs.isNotEmpty()) {
+                val total = NutritionCalculator.totals(logs)
+                val n = servings.toIntOrNull()?.coerceAtLeast(1) ?: 1
+                Text(
+                    "${total.calories/n/1000} ккал на порцию",
+                    style = MaterialTheme.typography.headlineMedium,
+                )
+            }
+            PrimaryButton(
+                {
+                    vm.run {
+                        vm.saveRecipe(name, servings.toIntOrNull() ?: 0, logs, editing?.id ?: 0)
+                        editing = null
+                    }
+                },
+                Modifier.fillMaxWidth(),
+            ) {
+                Text("Сохранить рецепт")
+            }
+            TextButton({ editing = null }) { Text("Отмена") }
+        } else {
+            if (p.recipes.isEmpty())
+                LifeEmptyState(
+                    "Ваши любимые блюда",
+                    "Соберите рецепт один раз, затем добавляйте готовые порции в дневник.",
+                    "Создать рецепт",
+                    { editing = Recipe(name = "") },
+                )
+            p.recipes.forEach { r ->
+                val ingredients = p.ingredients.filter { it.recipeId == r.id }
+                Panel {
+                    Text(r.name, style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "${r.servings} порций · ${ingredients.sumOf{it.calories}/r.servings/1000} ккал / порция",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    PrimaryButton({ chosen = r }) { Text("В дневник") }
+                    LifeOverflow(
+                        listOf(
+                            "Изменить" to
+                                {
+                                    editing = r
+                                    name = r.name
+                                    servings = r.servings.toString()
+                                    logs =
+                                        ingredients.map {
+                                            FoodLog(
+                                                customName = it.name,
+                                                mealType = "LUNCH",
+                                                amount = it.amount,
+                                                unit = it.unit,
+                                                calories = it.calories,
+                                                protein = it.protein,
+                                                fat = it.fat,
+                                                carbs = it.carbs,
+                                            )
+                                        }
+                                },
+                            "Удалить" to { vm.run { vm.repo.dao.delete(r) } },
+                        )
+                    )
+                }
+            }
+        }
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+    }
+    if (picker)
+        LifeBottomSheet({ picker = false }) {
+            Text("Ингредиент", style = MaterialTheme.typography.headlineSmall)
+            Column(Modifier) {
+                foods.forEach { f ->
+                    LifeSettingRow(
+                        f.name,
+                        f.brand,
+                        {
+                            ingredient = f
+                            picker = false
+                        },
+                    )
+                }
+            }
+            Text(
+                "Для сетевого продукта сначала сохраните его в каталоге",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    ingredient?.let {
+        CatalogPortionSheet(vm, it, date, { ingredient = null }, { logs = logs + it })
+    }
+    chosen?.let { r ->
+        LifeBottomSheet({ chosen = null }) {
+            Text(r.name, style = MaterialTheme.typography.headlineSmall)
+            ProductField("Порций", count, { count = it }, true)
+            Choice("Приём пищи", meal, listOf("BREAKFAST", "LUNCH", "DINNER", "SNACK")) {
+                meal = it
+            }
+            PrimaryButton({
+                vm.run {
+                    vm.food.save(
+                        Portions.recipe(
+                            r,
+                            p.ingredients.filter { it.recipeId == r.id },
+                            milli(count) ?: 0,
+                            meal,
+                            date
+                                .atTime(LocalTime.now())
+                                .atZone(ZoneId.systemDefault())
+                                .toInstant()
+                                .toEpochMilli(),
+                        )
+                    )
+                    chosen = null
+                    vm.messages.emit("Рецепт добавлен")
+                }
+            }) {
+                Text("Добавить в дневник")
+            }
+        }
+    }
+}
+
+@Composable
+fun SubscriptionScreen(vm: ProductViewModel, s: Snapshot) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    var add by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Subscription?>(null) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var amount by rememberSaveable { mutableStateOf("") }
+    var next by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
+    var account by remember { mutableStateOf(s.accounts.firstOrNull()?.id) }
+    var category by remember {
+        mutableStateOf(s.categories.firstOrNull { it.type == "EXPENSE" }?.id)
+    }
+    var interval by rememberSaveable { mutableStateOf("1") }
+    val error by vm.error.collectAsStateWithLifecycle()
+    Page("Подписки", action = { add = true }) {
+        s.accounts
+            .map { it.currency }
+            .distinct()
+            .forEach { currency ->
+                val ids = s.accounts.filter { it.currency == currency }.map { it.id }
+                val total =
+                    p.subscriptions
+                        .filter { it.active && it.accountId in ids }
+                        .sumOf { it.amount / it.intervalMonths }
+                if (total > 0)
+                    Panel {
+                        Text("В среднем за месяц", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            MoneyFormatter.format(total, currency),
+                            style = MaterialTheme.typography.displaySmall,
+                        )
+                    }
+            }
+        if (p.subscriptions.isEmpty())
+            LifeEmptyState(
+                "Не теряйте платежи из виду",
+                "Добавьте регулярный расход. Платёж записывается только после вашего подтверждения.",
+                "Добавить подписку",
+                { add = true },
+            )
+        p.subscriptions.forEach { v ->
+            val currency = s.accounts.firstOrNull { it.id == v.accountId }?.currency ?: "RUB"
+            Panel {
+                Text(v.name, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "${MoneyFormatter.format(v.amount,currency)} · ${LocalDate.ofEpochDay(v.nextDay)}"
+                )
+                if (v.active && v.nextDay <= LocalDate.now().toEpochDay())
+                    PrimaryButton({ selected = v }) { Text("Подтвердить платёж") }
+                LifeOverflow(
+                    listOf(
+                        (if (v.active) "Приостановить" else "Возобновить") to
+                            {
+                                vm.run { vm.repo.dao.put(v.copy(active = !v.active)) }
+                            },
+                        "Удалить" to { vm.run { vm.repo.dao.delete(v) } },
+                    )
+                )
+            }
+        }
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+    }
+    if (add)
+        LifeBottomSheet({ add = false }) {
+            Text("Регулярный платёж", style = MaterialTheme.typography.headlineSmall)
+            Column(Modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ProductField("Название", name, { name = it })
+                ProductField("Сумма", amount, { amount = it }, true)
+                Choice(
+                    "Счёт",
+                    s.accounts.firstOrNull { it.id == account }?.name.orEmpty(),
+                    s.accounts.map { it.name },
+                ) { v ->
+                    account = s.accounts.first { it.name == v }.id
+                }
+                Choice(
+                    "Категория",
+                    s.categories.firstOrNull { it.id == category }?.name.orEmpty(),
+                    s.categories.filter { it.type == "EXPENSE" }.map { it.name },
+                ) { v ->
+                    category = s.categories.first { it.name == v && it.type == "EXPENSE" }.id
+                }
+                ProductField("Следующий платёж, ГГГГ-ММ-ДД", next, { next = it })
+                Choice("Повторять каждые, мес.", interval, listOf("1", "3", "6", "12")) {
+                    interval = it
+                }
+                PrimaryButton({
+                    vm.run {
+                        val money =
+                            amount
+                                .replace(',', '.')
+                                .toBigDecimalOrNull()
+                                ?.multiply(java.math.BigDecimal(100))
+                                ?.longValueExact() ?: 0
+                        require(
+                            name.isNotBlank() && money > 0 && account != null && category != null
+                        )
+                        vm.repo.dao.put(
+                            Subscription(
+                                name = name,
+                                amount = money,
+                                accountId = account!!,
+                                categoryId = category!!,
+                                nextDay = LocalDate.parse(next).toEpochDay(),
+                                intervalMonths = interval.toInt(),
+                            )
+                        )
+                        add = false
+                    }
+                }) {
+                    Text("Сохранить")
+                }
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    selected?.let { v ->
+        AlertDialog(
+            { selected = null },
+            title = { Text("Записать платёж?") },
+            text = {
+                Text(
+                    "${v.name}: сумма будет добавлена в расходы выбранного счёта. Следующая дата сдвинется на ${v.intervalMonths} мес."
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    vm.pay(v)
+                    selected = null
+                }) {
+                    Text("Записать")
+                }
+            },
+            dismissButton = { TextButton({ selected = null }) { Text("Отмена") } },
+        )
+    }
+}
+
+@Composable
+fun ProfileScreen(vm: ProductViewModel) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    var name by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(p.preferences) {
+        if (name.isBlank())
+            name = p.preferences.firstOrNull { it.key == "profile_name" }?.value.orEmpty()
+    }
+    Page("Профиль") {
+        Text("Сделайте LifeTrack своим", style = MaterialTheme.typography.titleLarge)
+        ProductField("Как к вам обращаться", name, { name = it })
+        PrimaryButton(
+            { vm.preference("profile_name", name.trim().take(60)) },
+            Modifier.fillMaxWidth(),
+        ) {
+            Text("Сохранить")
+        }
+        Text(
+            "Имя остаётся на устройстве. Его можно изменить в любой момент.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+fun ReviewScreen(s: Snapshot, currency: String) {
+    var period by rememberSaveable { mutableStateOf("Неделя") }
+    val days = if (period == "Неделя") 7 else LocalDate.now().lengthOfMonth()
+    val end = LocalDate.now()
+    val start = if (period == "Неделя") end.minusDays(6) else end.withDayOfMonth(1)
+    val dates = generateSequence(start) { it.plusDays(1) }.takeWhile { it <= end }.toList()
+    val food = dates.map { NutritionCalculator.daily(s.nutrition, it).totals }
+    val finance = FinanceCalculator.stats(s, start, end, currency)
+    val habits = s.habits.filter { !it.archived }
+    val successes =
+        dates.sumOf { d ->
+            habits.count { h ->
+                HabitStatisticsCalculator.due(h, d) &&
+                    s.completions.any {
+                        it.habitId == h.id && it.day == d.toEpochDay() && it.count >= h.target
+                    }
+            }
+        }
+    val scheduled = dates.sumOf { d -> habits.count { HabitStatisticsCalculator.due(it, d) } }
+    Page("Ваш обзор") {
+        LifeSegmentedControl(listOf("Неделя", "Месяц"), period) { period = it }
+        Text("$start — $end", style = MaterialTheme.typography.bodySmall)
+        Panel {
+            Text("Маленькие шаги складываются", style = MaterialTheme.typography.titleLarge)
+            Text("$successes из $scheduled", style = MaterialTheme.typography.displaySmall)
+            Text("запланированных привычек выполнено")
+        }
+        Panel {
+            Text("Питание", style = MaterialTheme.typography.titleLarge)
+            val recorded = food.filter { it.calories > 0 }
+            if (recorded.isEmpty()) Text("Нет записей за этот период")
+            else {
+                Text(
+                    "${recorded.sumOf{it.calories}/recorded.size/1000} ккал",
+                    style = MaterialTheme.typography.displaySmall,
+                )
+                Text("В среднем за ${recorded.size} дней с записями")
+                BarChart(recorded.map { it.calories }, "Дни с записями питания")
+            }
+        }
+        Panel {
+            Text("Финансы", style = MaterialTheme.typography.titleLarge)
+            Text(
+                MoneyFormatter.format(finance.expense, currency),
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Text("Расходы · доходы ${MoneyFormatter.format(finance.income,currency)}")
+        }
+        val sleep = dates.mapNotNull { HealthMath.daily(s.product.health, "SLEEP", it) }
+        val steps = dates.mapNotNull { HealthMath.daily(s.product.health, "STEPS", it) }
+        if (sleep.isNotEmpty() || steps.isNotEmpty())
+            Panel {
+                Text("Здоровье", style = MaterialTheme.typography.titleLarge)
+                if (sleep.isNotEmpty())
+                    Text(
+                        "Сон в среднем ${(sleep.average()/3_600_000*10).toInt()/10.0} ч · ${sleep.size} дней"
+                    )
+                if (steps.isNotEmpty())
+                    Text("Шаги в среднем ${steps.average().toLong()} · ${steps.size} дней")
+                Text(
+                    "${HealthMath.workouts(s.product.health).count{HealthMath.day(it) in start..end}} тренировок"
+                )
+            }
+        Section("Цели") {
+            if (s.goals.isEmpty()) Text("Поставьте цель на следующий период")
+            else s.goals.forEach { Text("${it.name} · ${goalValue(it)}") }
+        }
+    }
+}
+
+@Composable
+fun HabitRulesScreen(vm: ProductViewModel, s: Snapshot) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    var selected by remember { mutableStateOf<HabitEntity?>(null) }
+    var kind by rememberSaveable { mutableStateOf("BOOLEAN") }
+    var metric by rememberSaveable { mutableStateOf("STEPS") }
+    var auto by rememberSaveable { mutableStateOf(false) }
+    var count by rememberSaveable { mutableStateOf("") }
+    var target by rememberSaveable { mutableStateOf("1") }
+    var unit by rememberSaveable { mutableStateOf("раз") }
+    Page("Ритм привычек") {
+        Text(
+            "Выберите привычку, чтобы изменить тип прогресса или связать её с доступным показателем здоровья."
+        )
+        s.habits
+            .filter { !it.archived }
+            .forEach { h ->
+                val r = p.habitRules.firstOrNull { it.habitId == h.id }
+                LifeSettingRow(
+                    h.name,
+                    r?.let {
+                        if (it.auto) "Авто · ${display(it.metric)}"
+                        else "${display(it.type)} · ${it.unit}"
+                    } ?: "Отметка",
+                    {
+                        selected = h
+                        kind = r?.type ?: "BOOLEAN"
+                        metric = r?.metric?.ifBlank { "STEPS" } ?: "STEPS"
+                        auto = r?.auto ?: false
+                        unit = r?.unit ?: "раз"
+                        target = h.target.toString()
+                        count = ""
+                    },
+                )
+            }
+    }
+    selected?.let { h ->
+        LifeBottomSheet({ selected = null }) {
+            Text(h.name, style = MaterialTheme.typography.headlineSmall)
+            Column(Modifier) {
+                Choice("Тип", kind, listOf("BOOLEAN", "COUNT", "DURATION", "QUANTITY")) {
+                    kind = it
+                }
+                ProductField("Цель на день", target, { target = it }, true)
+                ProductField("Единица", unit, { unit = it })
+                Toggle("Автоматически из здоровья", auto) { auto = it }
+                if (auto) {
+                    Choice("Показатель", metric, listOf("STEPS", "SLEEP", "HYDRATION", "WORKOUT")) {
+                        metric = it
+                    }
+                    Text(
+                        "Шаги — количество, сон — минуты, вода — мл. Ручная отметка имеет приоритет. Доступ к Health Connect запрашивается отдельно.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                PrimaryButton({
+                    vm.run {
+                        val t = target.toIntOrNull() ?: 0
+                        require(t in 1..10000)
+                        vm.db.dao().habit(h.copy(target = t))
+                        vm.repo.dao.put(
+                            HabitRule(h.id, kind, unit.take(30), if (auto) metric else "", auto)
+                        )
+                        vm.updateRules()
+                        selected = null
+                    }
+                }) {
+                    Text("Сохранить правило")
+                }
+                if (kind != "BOOLEAN") {
+                    ProductField("Прогресс сегодня", count, { count = it }, true)
+                    TextButton({
+                        vm.run {
+                            val v = count.toIntOrNull() ?: 0
+                            require(v in 0..10000)
+                            val day = LocalDate.now().toEpochDay()
+                            vm.repo.dao.put(ProductPreference("habit_manual:${h.id}:$day", "true"))
+                            if (v == 0) vm.db.dao().uncheck(h.id, day)
+                            else vm.db.dao().completion(HabitCompletionEntity(h.id, day, v))
+                            selected = null
+                        }
+                    }) {
+                        Text("Записать прогресс")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LinkedGoalsScreen(vm: ProductViewModel, s: Snapshot) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var kind by rememberSaveable { mutableStateOf("WORKOUT") }
+    var target by rememberSaveable { mutableStateOf("") }
+    var initial by rememberSaveable { mutableStateOf("") }
+    var unit by rememberSaveable { mutableStateOf("раз") }
+    var ref by remember { mutableStateOf<Long?>(null) }
+    var deadline by rememberSaveable { mutableStateOf("") }
+    val error by vm.error.collectAsStateWithLifecycle()
+    Page("Новая цель") {
+        ProductField("Название", name, { name = it })
+        Choice("Прогресс из", kind, listOf("WORKOUT", "HABIT", "WEIGHT", "SAVINGS", "CUSTOM")) {
+            kind = it
+            ref = null
+        }
+        if (kind == "HABIT")
+            Choice(
+                "Привычка",
+                s.habits.firstOrNull { it.id == ref }?.name.orEmpty(),
+                s.habits.map { it.name },
+            ) { v ->
+                ref = s.habits.first { it.name == v }.id
+            }
+        if (kind == "SAVINGS")
+            Choice(
+                "Счёт",
+                s.accounts.firstOrNull { it.id == ref }?.name.orEmpty(),
+                s.accounts.map { it.name },
+            ) { v ->
+                ref = s.accounts.first { it.name == v }.id
+            }
+        ProductField(
+            if (kind == "WEIGHT") "Целевой вес, кг" else "Целевое значение",
+            target,
+            { target = it },
+            true,
+        )
+        if (kind == "WEIGHT") ProductField("Начальный вес, кг", initial, { initial = it }, true)
+        if (kind == "CUSTOM") ProductField("Единица измерения", unit, { unit = it })
+        ProductField("Срок, ГГГГ-ММ-ДД · необязательно", deadline, { deadline = it })
+        Text(
+            "Связь обновляет прогресс из ваших записей. Деньги разных валют не смешиваются.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        PrimaryButton(
+            {
+                vm.run {
+                    val amount =
+                        when (kind) {
+                            "WEIGHT" -> milli(target)
+                            "SAVINGS" ->
+                                target
+                                    .replace(',', '.')
+                                    .toBigDecimalOrNull()
+                                    ?.multiply(java.math.BigDecimal(100))
+                                    ?.longValueExact()
+                            else -> target.toLongOrNull()
+                        } ?: 0
+                    require(name.isNotBlank() && amount > 0)
+                    if (kind in listOf("HABIT", "SAVINGS"))
+                        require(ref != null) { "Выберите источник" }
+                    val start = if (kind == "WEIGHT") milli(initial) ?: 0 else 0
+                    require(kind != "WEIGHT" || start in 20_000..500_000)
+                    val id =
+                        vm.db
+                            .dao()
+                            .goal(
+                                GoalEntity(
+                                    name = name,
+                                    type = if (kind == "SAVINGS") "FINANCIAL" else "LIFE",
+                                    target = amount,
+                                    current = start,
+                                    currency =
+                                        s.accounts
+                                            .firstOrNull { it.id == ref && kind == "SAVINGS" }
+                                            ?.currency ?: "RUB",
+                                    deadline =
+                                        deadline
+                                            .takeIf { it.isNotBlank() }
+                                            ?.let { LocalDate.parse(it).toEpochDay() },
+                                )
+                            )
+                    vm.repo.dao.put(
+                        GoalLink(
+                            id,
+                            kind,
+                            if (kind == "WEIGHT") "кг" else if (kind == "CUSTOM") unit else "раз",
+                            ref,
+                            LocalDate.now().toEpochDay(),
+                            start,
+                        )
+                    )
+                    vm.updateRules()
+                    name = ""
+                    target = ""
+                    vm.messages.emit("Цель создана")
+                }
+            },
+            Modifier.fillMaxWidth(),
+        ) {
+            Text("Создать цель")
+        }
+        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+fun ProductNotificationScreen(vm: ProductViewModel) {
+    val p by vm.data.collectAsStateWithLifecycle()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val permission =
+        androidx.activity.compose.rememberLauncherForActivityResult(
+            androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (!granted)
+                vm.error.value =
+                    "Разрешение не выдано. Настройки сохранены, уведомления пока отключены системой"
+        }
+    Page("Ваши напоминания") {
+        Text("Только то, что помогает. Ночные уведомления не отправляются.")
+        listOf(
+                "notify_water" to "Пауза для воды",
+                "notify_budget" to "Бюджет выбран на 80%",
+                "notify_review" to "Обзор недели",
+                "notify_goals" to "Вехи целей",
+            )
+            .forEach { (key, label) ->
+                Toggle(label, p.preferences.firstOrNull { it.key == key }?.value == "true") { value
+                    ->
+                    vm.preference(key, value.toString())
+                    if (value && android.os.Build.VERSION.SDK_INT >= 33)
+                        permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        Text(
+            "Напоминания привычек и их время настраиваются отдельно. Вода — максимум один раз в день, бюджет — один раз за месяц, обзор — по воскресеньям.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+fun InsightsScreen(s: Snapshot) {
+    val today = LocalDate.now()
+    val rows = (0L..89L).map { today.minusDays(it) }
+    val pairs =
+        rows.mapNotNull { date ->
+            val sleep =
+                HealthMath.daily(s.product.health, "SLEEP", date)?.toDouble()
+                    ?: return@mapNotNull null
+            val steps =
+                HealthMath.daily(s.product.health, "STEPS", date)?.toDouble()
+                    ?: return@mapNotNull null
+            sleep / 3_600_000 to steps
+        }
+    val correlation = HealthMath.correlation(pairs)
+    Page("Связи в вашем ритме") {
+        Text("Сравниваем записи одного дня. Совпадение не доказывает причинную связь.")
+        Panel {
+            Text("Сон и шаги", style = MaterialTheme.typography.titleLarge)
+            if (correlation == null) {
+                Text("Пока мало сопоставимых данных", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Нужно минимум 14 дней с записями сна и шагов за последние 90 дней, а также изменяющиеся значения."
+                )
+            } else {
+                Text(
+                    "${String.format(java.util.Locale.forLanguageTag("ru"),"%.2f",correlation)}",
+                    style = MaterialTheme.typography.displaySmall,
+                )
+                Text("Коэффициент корреляции · ${pairs.size} дней")
+                Text(
+                    "Показатель описывает только ваши записи, без медицинской интерпретации и рекомендаций."
+                )
+            }
+        }
+    }
+}

@@ -1,0 +1,230 @@
+package com.lifetrack.ui
+
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.*
+import androidx.compose.ui.unit.dp
+import com.lifetrack.BuildConfig
+import com.lifetrack.data.*
+import com.lifetrack.domain.*
+
+@Composable
+fun MoreHubScreen(navigate: (String) -> Unit) {
+    Page("Ещё") {
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                Modifier.padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                BrandMark(Modifier.size(42.dp))
+                Column {
+                    Text(LifeBrand.name, style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "Жизнь в своём ритме",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Section("Личное") {
+            LifeSettingRow("Профиль", "Ваши предпочтения", { navigate("profile") })
+            LifeSettingRow("Здоровье", "Сон, активность и тело", { navigate("health") })
+            LifeSettingRow("Цели", "Следующий шаг", { navigate("goals") })
+        }
+        Section("Ваш прогресс") {
+            LifeSettingRow("Аналитика", "Питание, привычки и финансы", { navigate("analytics") })
+            LifeSettingRow("Обзор недели", "Замечайте изменения", { navigate("review") })
+        }
+        LifeSettingRow("Подключения", "Health Connect и Garmin", { navigate("connections") })
+        LifeSettingRow("Организация", "Напоминания, правила и деньги", { navigate("organization") })
+        LifeSettingRow("Настройки", "", { navigate("settings") }, Icons.Outlined.MoreHoriz)
+    }
+}
+
+@Composable
+fun SettingsScreen(
+    prefs: Settings,
+    onSettings: (Settings) -> Unit,
+    onNotifications: (Boolean) -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
+    onDemo: () -> Unit,
+    onRemoveDemo: () -> Unit,
+    onClear: () -> Unit,
+) {
+    var sheet by remember { mutableStateOf<String?>(null) }
+    Page("Настройки") {
+        Column {
+            Text(
+                "ОСНОВНЫЕ",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Choice("Валюта", prefs.currency, listOf("RUB", "USD", "EUR", "SEK")) {
+                onSettings(prefs.copy(currency = it))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Choice("Тема", prefs.theme, listOf("SYSTEM", "LIGHT", "DARK")) {
+                onSettings(prefs.copy(theme = it))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Choice(
+                "Начало недели",
+                if (prefs.monday) "Понедельник" else "Воскресенье",
+                listOf("Понедельник", "Воскресенье"),
+            ) {
+                onSettings(prefs.copy(monday = it == "Понедельник"))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LifeSettingRow(
+                "Уведомления",
+                if (prefs.notifications) "Включены" else "Выключены",
+                { sheet = "notifications" },
+            )
+        }
+        Column {
+            Text(
+                "ДАННЫЕ",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LifeSettingRow("Экспорт данных", "", onExport)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LifeSettingRow("Восстановить копию", "", onImport)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LifeSettingRow("Демо-данные", "", { sheet = "demo" })
+        }
+        Column {
+            Text(
+                "О ПРИЛОЖЕНИИ",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("Версия")
+                Text(
+                    BuildConfig.VERSION_NAME,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LifeSettingRow("Конфиденциальность", "", { sheet = "privacy" })
+        }
+        TextButton(onClear, contentPadding = PaddingValues(0.dp)) {
+            Text("Удалить все данные", color = lifeColors.expense)
+        }
+    }
+    sheet?.let { kind ->
+        LifeBottomSheet({ sheet = null }) {
+            Text(
+                when (kind) {
+                    "notifications" -> "Уведомления"
+                    "demo" -> "Попробовать на примере"
+                    else -> "Ваши данные — ваши"
+                },
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            when (kind) {
+                "notifications" -> {
+                    Text(
+                        "Напоминания помогают вернуться к привычкам. Время можно выбрать в настройках каждой привычки.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Toggle("Напоминания", prefs.notifications) { onNotifications(it) }
+                }
+                "demo" -> {
+                    Text(
+                        "Примеры помогают познакомиться с приложением. Они отмечены отдельно от ваших записей.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LifeSheetAction(
+                        Icons.Outlined.Add,
+                        "Загрузить пример",
+                        onClick = {
+                            sheet = null
+                            onDemo()
+                        },
+                    )
+                    LifeSheetAction(
+                        Icons.Outlined.Delete,
+                        "Удалить примеры",
+                        onClick = {
+                            sheet = null
+                            onRemoveDemo()
+                        },
+                    )
+                }
+                else -> {
+                    Text(
+                        "Питание, привычки и финансы хранятся на устройстве. Регистрация, банковские подключения и сторонняя аналитика отсутствуют."
+                    )
+                    Text(
+                        "Поиск отправляет запросы в Open Food Facts. Фото отправляется на ваш сервер и vision-провайдеру только после подтверждения анализа. Health Connect сохраняет выбранные категории локально; разрешения можно отозвать. Секреты провайдеров в приложении не хранятся."
+                    )
+                    Text(
+                        "Вы можете экспортировать резервную копию или удалить данные в любой момент.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AccountsScreen(s: Snapshot, edit: (Any) -> Unit) {
+    Page("Счета", "Все ваши балансы", { edit("ACCOUNT") }) {
+        s.accounts.forEach { a ->
+            Panel {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(a.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    LifeOverflow(listOf("Изменить" to { edit(a) }))
+                }
+                Text(
+                    MoneyFormatter.format(FinanceCalculator.balance(s, a), a.currency),
+                    style = MaterialTheme.typography.headlineLarge,
+                )
+                Text(
+                    display(a.kind),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            "Разные валюты учитываются отдельно.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun CategoriesScreen(s: Snapshot, edit: (Any) -> Unit) {
+    var type by remember { mutableStateOf("EXPENSE") }
+    Page("Категории", action = { edit("CATEGORY") }) {
+        LifeSegmentedControl(listOf("EXPENSE", "INCOME"), type) { type = it }
+        Column {
+            s.categories
+                .filter { it.type == type }
+                .forEach { c -> LifeSettingRow(c.name, "", { edit(c) }, Icons.Outlined.Restaurant) }
+        }
+    }
+}
